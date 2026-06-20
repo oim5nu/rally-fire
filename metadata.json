@@ -1,0 +1,6 @@
+{
+  "name": "RallyFire",
+  "description": "High-velocity competitive tennis platform with player grouping, match draws, live rankings, and round-robin score tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
