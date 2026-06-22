@@ -121,6 +121,32 @@ function MatchScoreRow({
   );
 }
 
+export function countAttendeeGroups(
+  selectedPlayers: ReadonlySet<string>,
+  groupOverrides: Readonly<Record<string, 'A' | 'B'>>,
+) {
+  let groupA = 0;
+  let groupB = 0;
+
+  selectedPlayers.forEach((playerId) => {
+    if (groupOverrides[playerId] === 'A') groupA += 1;
+    if (groupOverrides[playerId] === 'B') groupB += 1;
+  });
+
+  return {
+    attendees: selectedPlayers.size,
+    groupA,
+    groupB,
+    auto: selectedPlayers.size - groupA - groupB,
+  };
+}
+
+export function sortPlayersByPoints(players: readonly AdminPlayer[]): AdminPlayer[] {
+  return [...players].sort(
+    (left, right) => right.points - left.points || left.name.localeCompare(right.name),
+  );
+}
+
 export default function AdminDashboard({ membership, onDataChanged }: AdminDashboardProps) {
   const { reportError, track } = useActivity();
   const { data: seasonData, mutate: mutateSeasons } = useSWR<{
@@ -144,6 +170,8 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const attendeeGroups = countAttendeeGroups(selectedPlayers, groupOverrides);
+  const sortedPlayers = sortPlayersByPoints(players);
 
   useEffect(() => {
     if (!session || session.status !== 'draft') return;
@@ -400,7 +428,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
               <button disabled={busy} className="rounded-lg border border-primary-fixed px-4 py-2 text-sm font-black text-primary-fixed sm:col-span-2 disabled:opacity-50">Add player</button>
             </form>
             <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
-              {players.map((player) => <div key={player.id} className="flex items-center justify-between rounded-lg bg-surface-dim/60 px-3 py-2 text-sm"><span className="font-bold text-white">{player.name}</span><span className="text-xs text-on-surface-variant">Skill {player.clubSkill} · {player.points} pts</span></div>)}
+              {sortedPlayers.map((player) => <div key={player.id} className="flex items-center justify-between rounded-lg bg-surface-dim/60 px-3 py-2 text-sm"><span className="font-bold text-white">{player.name}</span><span className="text-xs text-on-surface-variant">Skill {player.clubSkill} · {player.points} pts</span></div>)}
               {!players.length && <p className="py-5 text-center text-sm text-on-surface-variant">No players yet.</p>}
             </div>
             {players.length > 0 && (
@@ -432,8 +460,11 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
             ) : session.status === 'draft' ? (
               <>
                 <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees. The server ranks by accumulated points by default, then securely pairs one player from each half.</p></div>
+                <p className="text-sm font-bold text-white" aria-live="polite">
+                  {attendeeGroups.attendees} attendees · A: {attendeeGroups.groupA} · B: {attendeeGroups.groupB} · Auto: {attendeeGroups.auto}
+                </p>
                 <div className="grid gap-2 sm:grid-cols-2">
-                  {players.filter((player) => player.active).map((player) => (
+                  {sortedPlayers.filter((player) => player.active).map((player) => (
                     <div key={player.id} className="flex items-center gap-2 rounded-lg bg-surface-dim/60 p-2">
                       <input type="checkbox" checked={selectedPlayers.has(player.id)} onChange={(event) => setSelectedPlayers((current) => { const next = new Set(current); event.target.checked ? next.add(player.id) : next.delete(player.id); return next; })} aria-label={`Include ${player.name}`} />
                       <span className="min-w-0 flex-1 truncate text-sm font-bold text-white">{player.name}</span>
