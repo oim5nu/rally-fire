@@ -2,12 +2,81 @@ import { describe, expect, it } from 'vitest';
 import {
   assignRankedGroups,
   buildConfiguredDraw,
+  buildDefaultKnockoutConfig,
   buildDrawPersistenceRows,
+  buildKnockoutDraw,
   buildRoundRobinDraw,
   calculateMatchAwards,
   planAttendanceRollback,
+  knockoutStageLabel,
+  validateWinnerAdvancement,
   validateCompletedScore,
 } from './competition';
+
+describe('knockout winner advancement', () => {
+  it('allows initial advancement and corrections before downstream scoring', () => {
+    expect(() => validateWinnerAdvancement(null, 'team-a', false)).not.toThrow();
+    expect(() => validateWinnerAdvancement('team-a', 'team-b', false)).not.toThrow();
+  });
+
+  it('blocks a changed winner after the downstream match is scored', () => {
+    expect(() => validateWinnerAdvancement('team-a', 'team-b', true)).toThrow(/downstream/i);
+    expect(() => validateWinnerAdvancement('team-a', 'team-a', true)).not.toThrow();
+  });
+});
+
+describe('knockout bracket generation', () => {
+  it.each([
+    [4, 0, 4],
+    [6, 2, 4],
+    [8, 0, 8],
+    [10, 2, 8],
+  ])('builds defaults for %i teams', (teamCount, preliminaryCount, mainSize) => {
+    const config = buildDefaultKnockoutConfig(teamCount);
+    expect(config.preliminaryPairs).toHaveLength(preliminaryCount);
+    expect(config.mainSources).toHaveLength(mainSize);
+    const draw = buildKnockoutDraw(teamCount, config);
+    expect(draw.matches.filter((match) => match.round === 0)).toHaveLength(preliminaryCount);
+    expect(draw.matches.filter((match) => match.round === 1)).toHaveLength(mainSize / 2);
+    expect(draw.matches.at(-1)?.round).toBe(Math.log2(mainSize));
+  });
+
+  it('pairs high versus low in preliminaries and seeds ten teams into an eight-team bracket', () => {
+    const config = buildDefaultKnockoutConfig(10);
+    expect(config.preliminaryPairs).toEqual([[6, 9], [7, 8]]);
+    expect(config.mainSources).toEqual([
+      { kind: 'team', teamIndex: 0 },
+      { kind: 'preliminary', matchIndex: 1 },
+      { kind: 'team', teamIndex: 3 },
+      { kind: 'team', teamIndex: 4 },
+      { kind: 'team', teamIndex: 1 },
+      { kind: 'preliminary', matchIndex: 0 },
+      { kind: 'team', teamIndex: 2 },
+      { kind: 'team', teamIndex: 5 },
+    ]);
+  });
+
+  it('accepts custom preliminary and main paths but rejects reused sources', () => {
+    const config = buildDefaultKnockoutConfig(6);
+    const custom = {
+      preliminaryPairs: [...config.preliminaryPairs].reverse(),
+      mainSources: [...config.mainSources].reverse(),
+    };
+    expect(buildKnockoutDraw(6, custom).matches).toHaveLength(5);
+    expect(() => buildKnockoutDraw(6, {
+      ...config,
+      mainSources: config.mainSources.map((source) => ({ ...source })).fill(config.mainSources[0], 1, 2),
+    })).toThrow(/exactly once/i);
+  });
+
+  it('labels bracket stages by their match count', () => {
+    expect(knockoutStageLabel(0, 2)).toBe('Preliminary');
+    expect(knockoutStageLabel(1, 8)).toBe('Round of 16');
+    expect(knockoutStageLabel(1, 4)).toBe('Quarterfinal');
+    expect(knockoutStageLabel(2, 2)).toBe('Semifinal');
+    expect(knockoutStageLabel(3, 1)).toBe('Final');
+  });
+});
 
 describe('attendance rollback', () => {
   const matchStatuses = ['completed', 'pending', 'completed'] as const;

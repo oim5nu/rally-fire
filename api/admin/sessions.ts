@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api.js';
@@ -19,10 +20,13 @@ import {
 } from '../../server/db/schema.js';
 import {
   buildConfiguredDraw,
+  buildKnockoutDraw,
   buildDrawPersistenceRows,
   calculateMatchAwards,
   planAttendanceRollback,
   validateCompletedScore,
+  validateWinnerAdvancement,
+  type KnockoutConfig,
 } from '../../server/domain/competition.js';
 
 const actionSchema = z.discriminatedUnion('action', [
@@ -30,6 +34,7 @@ const actionSchema = z.discriminatedUnion('action', [
     action: z.literal('create'),
     name: z.string().trim().min(1).max(100),
     scheduledAt: z.iso.datetime(),
+    format: z.enum(['round_robin', 'knockout']).default('round_robin'),
     replacementForSessionId: z.uuid().optional(),
   }),
   z.object({
@@ -47,6 +52,13 @@ const actionSchema = z.discriminatedUnion('action', [
       groupAPlayerId: z.uuid(),
       groupBPlayerId: z.uuid(),
     })).min(2),
+    knockoutConfig: z.object({
+      preliminaryPairs: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
+      mainSources: z.array(z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('team'), teamIndex: z.number().int().nonnegative() }),
+        z.object({ kind: z.literal('preliminary'), matchIndex: z.number().int().nonnegative() }),
+      ])),
+    }).optional(),
   }),
   z.object({
     action: z.literal('score'),
@@ -169,6 +181,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
         .values({
           seasonId: season.id,
           name: input.name,
+          format: input.format,
           scheduledAt: new Date(input.scheduledAt),
           winPointsSnapshot: season.winPoints,
           lossPointsSnapshot: season.lossPoints,
@@ -271,6 +284,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           ),
         );
       let draw;
+      let knockout: ReturnType<typeof buildKnockoutDraw> | null = null;
       try {
         if (attendees.some((player) => !player.group)) {
           throw new Error('Every attendee must have an explicit A or B group before pairing.');
@@ -279,6 +293,12 @@ export default async function handler(request: VercelRequest, response: VercelRe
           attendees.map((player) => ({ ...player, group: player.group as 'A' | 'B' })),
           input.pairs,
         );
+        if (session.format === 'knockout' && !input.knockoutConfig) {
+          throw new Error('Knockout bracket configuration is required.');
+        }
+        knockout = session.format === 'knockout'
+          ? buildKnockoutDraw(draw.teams.length, input.knockoutConfig as KnockoutConfig)
+          : null;
       } catch (error) {
         sendJson(response, 409, {
           error: 'invalid_draw',
@@ -287,7 +307,11 @@ export default async function handler(request: VercelRequest, response: VercelRe
         return;
       }
       const grouped = draw.teams.flatMap((team) => team.members);
-      const drawRows = buildDrawPersistenceRows(session.id, grouped, draw);
+      const drawRows = buildDrawPersistenceRows(
+        session.id,
+        grouped,
+        { teams: draw.teams, matches: knockout ? [] : draw.matches },
+      );
       await database.transaction(async (transaction) => {
         await transaction
           .insert(sessionParticipants)
@@ -300,21 +324,39 @@ export default async function handler(request: VercelRequest, response: VercelRe
         await transaction.delete(teamMembers).where(eq(teamMembers.sessionId, session.id));
         await transaction.delete(teams).where(eq(teams.sessionId, session.id));
         const insertedTeams = await transaction.insert(teams).values(drawRows.teams).returning();
-        const teamsByIndex = new Map(insertedTeams.map((team) => [team.seed - 1, team]));
+        const teamsByIndex = new Map(insertedTeams.map((team) => [
+          drawRows.teams.findIndex((row) => row.seed === team.seed),
+          team,
+        ]));
         await transaction.insert(teamMembers).values(drawRows.members.map((member) => ({
           teamId: teamsByIndex.get(member.teamIndex)!.id,
           sessionId: member.sessionId,
           playerId: member.playerId,
           group: member.group,
         })));
-        await transaction.insert(matches).values(
-          drawRows.matches.map((match) => ({
+        if (knockout) {
+          const matchIds = new Map(knockout.matches.map((match) => [match.key, randomUUID()]));
+          await transaction.insert(matches).values(knockout.matches.map((match, index) => ({
+            id: matchIds.get(match.key)!,
             sessionId: session.id,
-            sequence: match.sequence,
-            teamAId: teamsByIndex.get(match.teamAIndex)!.id,
-            teamBId: teamsByIndex.get(match.teamBIndex)!.id,
-          })),
-        );
+            sequence: index + 1,
+            teamAId: match.teamAIndex === null ? null : teamsByIndex.get(match.teamAIndex)!.id,
+            teamBId: match.teamBIndex === null ? null : teamsByIndex.get(match.teamBIndex)!.id,
+            bracketRound: match.round,
+            bracketPosition: match.position,
+            nextMatchId: match.nextKey ? matchIds.get(match.nextKey)! : null,
+            winnerToSlot: match.winnerToSlot,
+          })));
+        } else {
+          await transaction.insert(matches).values(
+            drawRows.matches.map((match) => ({
+              sessionId: session.id,
+              sequence: match.sequence,
+              teamAId: teamsByIndex.get(match.teamAIndex)!.id,
+              teamBId: teamsByIndex.get(match.teamBIndex)!.id,
+            })),
+          );
+        }
         await transaction
           .update(playSessions)
           .set({ status: 'draw_published', updatedAt: new Date() })
@@ -324,7 +366,12 @@ export default async function handler(request: VercelRequest, response: VercelRe
           action: 'session.draw_published',
           entityType: 'play_session',
           entityId: session.id,
-          details: { pairing: 'manual', teamCount: draw.teams.length, matchCount: draw.matches.length },
+          details: {
+            pairing: 'manual',
+            format: session.format,
+            teamCount: draw.teams.length,
+            matchCount: knockout?.matches.length ?? draw.matches.length,
+          },
         });
       });
       sendJson(response, 200, { session: await getSessionDetail(session.id) });
@@ -352,7 +399,32 @@ export default async function handler(request: VercelRequest, response: VercelRe
         sendJson(response, 409, { error: 'scoreable_match_required' });
         return;
       }
-      await database.transaction(async (transaction) => {
+      if (!match.match.teamAId || !match.match.teamBId) {
+        sendJson(response, 409, { error: 'knockout_match_unresolved', message: 'Both feeder winners are required before scoring this match.' });
+        return;
+      }
+      const winnerTeamId = score.scoreA > score.scoreB ? match.match.teamAId : match.match.teamBId;
+      const scoreResult = await database.transaction(async (transaction) => {
+        if (match.match.nextMatchId && match.match.winnerToSlot) {
+          const [nextMatch] = await transaction
+            .select()
+            .from(matches)
+            .where(eq(matches.id, match.match.nextMatchId))
+            .for('update')
+            .limit(1);
+          if (!nextMatch) return { error: 'knockout_path_invalid' as const };
+          const currentWinner = match.match.winnerToSlot === 'A' ? nextMatch.teamAId : nextMatch.teamBId;
+          const downstreamScored = nextMatch.scoreA !== null || nextMatch.scoreB !== null;
+          try {
+            validateWinnerAdvancement(currentWinner, winnerTeamId, downstreamScored);
+          } catch {
+            return { error: 'downstream_match_already_scored' as const };
+          }
+          await transaction
+            .update(matches)
+            .set(match.match.winnerToSlot === 'A' ? { teamAId: winnerTeamId } : { teamBId: winnerTeamId })
+            .where(eq(matches.id, nextMatch.id));
+        }
         await transaction
           .update(matches)
           .set({ ...score, court: input.court, status: 'completed', updatedAt: new Date() })
@@ -368,7 +440,12 @@ export default async function handler(request: VercelRequest, response: VercelRe
           entityId: match.match.id,
           details: score,
         });
+        return { ok: true as const };
       });
+      if ('error' in scoreResult) {
+        sendJson(response, 409, scoreResult);
+        return;
+      }
       sendJson(response, 200, { session: await getSessionDetail(match.session.id) });
       return;
     }
@@ -545,6 +622,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
             .values({
               seasonId: session.seasonId,
               name: `${session.name} replacement`,
+              format: session.format,
               scheduledAt: new Date(),
               winPointsSnapshot: session.winPointsSnapshot,
               lossPointsSnapshot: session.lossPointsSnapshot,

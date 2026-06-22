@@ -3,6 +3,8 @@ import {
   buildManualPairPayload,
   countAttendeeGroups,
   createManualPairRows,
+  createDefaultKnockoutSetup,
+  isValidKnockoutSetup,
   sortPlayersByPoints,
 } from './AdminDashboard';
 
@@ -60,5 +62,22 @@ describe('manual pairing', () => {
     ]);
     expect(buildManualPairPayload([{ ...rows[0] }, { ...rows[1], number: '1' }], ['a1', 'a2'], ['b1', 'b2'])).toBeNull();
     expect(buildManualPairPayload([{ ...rows[0] }, { ...rows[1], groupAPlayerId: 'a1' }], ['a1', 'a2'], ['b1', 'b2'])).toBeNull();
+  });
+});
+
+describe('knockout setup', () => {
+  it('creates ten-team preliminary and main-slot defaults', () => {
+    const setup = createDefaultKnockoutSetup(10);
+    expect(setup.preliminaryPairs).toEqual([[6, 9], [7, 8]]);
+    expect(setup.mainSources).toHaveLength(8);
+    expect(isValidKnockoutSetup(10, setup)).toBe(true);
+  });
+
+  it('rejects repeated team and preliminary sources', () => {
+    const setup = createDefaultKnockoutSetup(6);
+    expect(isValidKnockoutSetup(6, {
+      ...setup,
+      mainSources: setup.mainSources.map((source, index) => index === 1 ? setup.mainSources[0] : source),
+    })).toBe(false);
   });
 });

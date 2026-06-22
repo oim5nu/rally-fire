@@ -3,6 +3,7 @@ import useSWR from 'swr';
 import { adminRequest, ApiError } from '../lib/api';
 import DateTimePicker from './DateTimePicker';
 import { useActivity } from '../lib/activity';
+import KnockoutBracket from './KnockoutBracket';
 
 interface Membership {
   id: string;
@@ -23,18 +24,21 @@ interface AdminPlayer {
 interface AdminMatch {
   id: string;
   sequence: number;
-  teamAId: string;
-  teamBId: string;
+  teamAId: string | null;
+  teamBId: string | null;
   scoreA: number | null;
   scoreB: number | null;
   court: string | null;
   status: 'pending' | 'in_progress' | 'completed';
+  bracketRound: number | null;
+  bracketPosition: number | null;
 }
 
 interface AdminSession {
   id: string;
   name: string;
   scheduledAt: string;
+  format: 'round_robin' | 'knockout';
   status: 'draft' | 'draw_published' | 'in_progress' | 'finalized' | 'voided';
   participants: Array<{
     playerId: string;
@@ -61,6 +65,15 @@ export interface ManualPairRow {
   groupBPlayerId: string;
 }
 
+export type KnockoutSetupSource =
+  | { kind: 'team'; teamIndex: number }
+  | { kind: 'preliminary'; matchIndex: number };
+
+export interface KnockoutSetup {
+  preliminaryPairs: Array<[number, number]>;
+  mainSources: KnockoutSetupSource[];
+}
+
 const adminFetcher = <T,>(url: string) => adminRequest<T>(url);
 
 function errorMessage(error: unknown) {
@@ -71,10 +84,12 @@ function MatchScoreRow({
   match,
   session,
   onSaved,
+  compact = false,
 }: {
   match: AdminMatch;
   session: AdminSession;
   onSaved: () => Promise<void>;
+  compact?: boolean;
 }) {
   const { reportError, track } = useActivity();
   const [scoreA, setScoreA] = useState(match.scoreA?.toString() ?? '');
@@ -107,6 +122,18 @@ function MatchScoreRow({
     } finally {
       setBusy(false);
     }
+  }
+
+  if (compact) {
+    return (
+      <form onSubmit={saveScore} className="w-72 rounded-xl border border-outline-variant/25 bg-surface-dim/90 p-3 shadow-lg">
+        <div className="mb-2 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-on-surface-variant"><span>Match {match.sequence}</span><span>{match.status}</span></div>
+        <label className="flex items-center justify-between gap-2 rounded px-2 py-1 text-xs font-bold text-white"><span className="truncate">{teamA && `#${teamA.seed} ${teamA.members.map((member) => member.name).join(' / ')}`}</span><input aria-label={`Match ${match.sequence} team A score`} type="number" min="0" max="99" required value={scoreA} onChange={(event) => setScoreA(event.target.value)} className="w-12 rounded border border-outline-variant bg-surface-container px-1 py-1 text-center text-white" /></label>
+        <label className="mt-1 flex items-center justify-between gap-2 rounded px-2 py-1 text-xs font-bold text-white"><span className="truncate">{teamB && `#${teamB.seed} ${teamB.members.map((member) => member.name).join(' / ')}`}</span><input aria-label={`Match ${match.sequence} team B score`} type="number" min="0" max="99" required value={scoreB} onChange={(event) => setScoreB(event.target.value)} className="w-12 rounded border border-outline-variant bg-surface-container px-1 py-1 text-center text-white" /></label>
+        <div className="mt-2 flex gap-2"><input aria-label={`Match ${match.sequence} court`} value={court} onChange={(event) => setCourt(event.target.value)} placeholder="Court" className="min-w-0 flex-1 rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-xs text-white" /><button disabled={busy} className="rounded bg-primary-fixed px-3 py-1.5 text-xs font-black text-on-primary-fixed disabled:opacity-50">{match.status === 'completed' ? 'Update' : 'Save'}</button></div>
+        {error && <p role="alert" className="mt-2 text-xs text-red-300">{error}</p>}
+      </form>
+    );
   }
 
   return (
@@ -185,6 +212,46 @@ export function buildManualPairPayload(
   }));
 }
 
+function uiBracketSeedOrder(size: number): number[] {
+  let order = [1, 2];
+  for (let currentSize = 2; currentSize < size; currentSize *= 2) {
+    const nextSize = currentSize * 2;
+    order = order.flatMap((seed) => [seed, nextSize + 1 - seed]);
+  }
+  return size === 1 ? [1] : order;
+}
+
+export function createDefaultKnockoutSetup(teamCount: number): KnockoutSetup {
+  if (teamCount < 2) return { preliminaryPairs: [], mainSources: [] };
+  const mainSize = 2 ** Math.floor(Math.log2(teamCount));
+  const preliminaryCount = teamCount - mainSize;
+  const byeCount = mainSize - preliminaryCount;
+  const preliminaryPairs = Array.from({ length: preliminaryCount }, (_, index) => [
+    byeCount + index,
+    teamCount - 1 - index,
+  ] as [number, number]);
+  const nominalSources = Array.from({ length: mainSize }, (_, index): KnockoutSetupSource =>
+    index < byeCount
+      ? { kind: 'team', teamIndex: index }
+      : { kind: 'preliminary', matchIndex: index - byeCount });
+  return {
+    preliminaryPairs,
+    mainSources: uiBracketSeedOrder(mainSize).map((seed) => nominalSources[seed - 1]),
+  };
+}
+
+export function isValidKnockoutSetup(teamCount: number, setup: KnockoutSetup): boolean {
+  if (teamCount < 2) return false;
+  const mainSize = 2 ** Math.floor(Math.log2(teamCount));
+  const preliminaryCount = teamCount - mainSize;
+  if (setup.preliminaryPairs.length !== preliminaryCount || setup.mainSources.length !== mainSize) return false;
+  const teams = setup.preliminaryPairs.flat();
+  const preliminaries: number[] = [];
+  setup.mainSources.forEach((source) => source.kind === 'team' ? teams.push(source.teamIndex) : preliminaries.push(source.matchIndex));
+  return [...teams].sort((a, b) => a - b).join(',') === Array.from({ length: teamCount }, (_, index) => index).join(',')
+    && [...preliminaries].sort((a, b) => a - b).join(',') === Array.from({ length: preliminaryCount }, (_, index) => index).join(',');
+}
+
 export default function AdminDashboard({ membership, onDataChanged }: AdminDashboardProps) {
   const { reportError, track } = useActivity();
   const { data: seasonData, mutate: mutateSeasons } = useSWR<{
@@ -205,6 +272,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const [selectedPlayers, setSelectedPlayers] = useState<Set<string>>(new Set());
   const [groupOverrides, setGroupOverrides] = useState<Record<string, 'A' | 'B'>>({});
   const [manualPairs, setManualPairs] = useState<ManualPairRow[]>([]);
+  const [knockoutSetup, setKnockoutSetup] = useState<KnockoutSetup>({ preliminaryPairs: [], mainSources: [] });
   const [attendanceDirty, setAttendanceDirty] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -228,6 +296,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
 
   const groupAPlayers = sortedPlayers.filter((player) => selectedPlayers.has(player.id) && groupOverrides[player.id] === 'A');
   const groupBPlayers = sortedPlayers.filter((player) => selectedPlayers.has(player.id) && groupOverrides[player.id] === 'B');
+  const seededPairs = [...manualPairs].sort((left, right) => Number(left.number) - Number(right.number));
 
   useEffect(() => {
     setManualPairs(createManualPairRows(
@@ -235,6 +304,10 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
       groupBPlayers.map((player) => player.id),
     ));
   }, [selectedPlayers, groupOverrides, players]);
+
+  useEffect(() => {
+    setKnockoutSetup(createDefaultKnockoutSetup(manualPairs.length));
+  }, [manualPairs.length, session?.format]);
 
   useEffect(() => {
     if (playerError) reportError(errorMessage(playerError));
@@ -315,7 +388,12 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     await runAction(
       () => adminRequest('/api/admin/sessions', {
         method: 'POST',
-        body: JSON.stringify({ action: 'create', name: form.get('name'), scheduledAt: new Date(String(form.get('scheduledAt'))).toISOString() }),
+        body: JSON.stringify({
+          action: 'create',
+          name: form.get('name'),
+          scheduledAt: new Date(String(form.get('scheduledAt'))).toISOString(),
+          format: form.get('format'),
+        }),
       }),
       'Session created. Confirm attendance before drawing teams.',
     );
@@ -376,7 +454,12 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     await runAction(
       () => adminRequest('/api/admin/sessions', {
         method: 'POST',
-        body: JSON.stringify({ action: 'draw', sessionId: session.id, pairs }),
+        body: JSON.stringify({
+          action: 'draw',
+          sessionId: session.id,
+          pairs,
+          knockoutConfig: session.format === 'knockout' ? knockoutSetup : undefined,
+        }),
       }),
       'Match schedule published.',
     );
@@ -539,13 +622,20 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                     <input name="name" required placeholder="Wednesday Doubles" className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-3 font-normal normal-case tracking-normal text-white outline-none transition focus:border-primary-fixed focus:ring-2 focus:ring-primary-fixed/30" />
                   </label>
                   <DateTimePicker name="scheduledAt" label="Scheduled date and time" required />
+                  <label className="text-xs font-bold uppercase tracking-wide text-on-surface-variant sm:col-span-2">
+                    Competition format
+                    <select name="format" defaultValue="round_robin" className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-3 font-normal normal-case tracking-normal text-white">
+                      <option value="round_robin">Round robin</option>
+                      <option value="knockout">Knockout bracket</option>
+                    </select>
+                  </label>
                   <button disabled={busy} className="rounded-lg bg-primary-fixed px-4 py-2 text-sm font-black text-on-primary-fixed sm:col-span-2 disabled:opacity-50">Create session</button>
                 </form>
                 {session?.status === 'finalized' && membership.role === 'superadmin' && <button type="button" disabled={busy} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'void', sessionId: session.id, reason: 'Voided by superadministrator from the control console', createReplacement: true }) }), 'Session voided and replacement draft created.')} className="text-xs font-bold text-red-300 underline">Void finalized session and create replacement</button>}
               </>
             ) : session.status === 'draft' ? (
               <>
-                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees, assign every player to A or B, save attendance, then configure each numbered pair.</p></div>
+                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft · {session.format === 'knockout' ? 'Knockout' : 'Round robin'}</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees, assign every player to A or B, save attendance, then configure each numbered pair.</p></div>
                 <p className="text-sm font-bold text-white" aria-live="polite">
                   {attendeeGroups.attendees} attendees · A: {attendeeGroups.groupA} · B: {attendeeGroups.groupB} · Auto: {attendeeGroups.auto}
                 </p>
@@ -575,15 +665,41 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                         <select aria-label={`Pair ${index + 1} group B player`} value={pair.groupBPlayerId} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, groupBPlayerId: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{groupBPlayers.map((player) => <option key={player.id} value={player.id}>B · {player.name}</option>)}</select>
                       </div>
                     ))}
-                    <button type="button" disabled={busy || !buildManualPairPayload(manualPairs, groupAPlayers.map((player) => player.id), groupBPlayers.map((player) => player.id))} onClick={generateSchedule} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate match schedule</button>
+                    {session.format === 'knockout' && (
+                      <div className="space-y-3 border-t border-outline-variant/20 pt-3">
+                        <div><h4 className="text-xs font-black uppercase tracking-wider text-primary-fixed">Knockout path</h4><p className="mt-1 text-[11px] text-on-surface-variant">Override preliminary matchups and place every bye seed or preliminary winner into the main bracket.</p></div>
+                        {knockoutSetup.preliminaryPairs.map((preliminary, index) => (
+                          <div key={`preliminary-${index}`} className="grid grid-cols-[6rem_1fr_1fr] items-center gap-2">
+                            <span className="text-[10px] font-bold uppercase text-on-surface-variant">Prelim {index + 1}</span>
+                            {([0, 1] as const).map((slot) => <select key={slot} aria-label={`Preliminary ${index + 1} slot ${slot === 0 ? 'A' : 'B'}`} value={preliminary[slot]} onChange={(event) => setKnockoutSetup((current) => ({ ...current, preliminaryPairs: current.preliminaryPairs.map((row, rowIndex) => rowIndex === index ? row.map((value, valueIndex) => valueIndex === slot ? Number(event.target.value) : value) as [number, number] : row) }))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{seededPairs.map((pair, pairIndex) => <option key={pairIndex} value={pairIndex}>Pair #{pair.number}</option>)}</select>)}
+                          </div>
+                        ))}
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {knockoutSetup.mainSources.map((source, index) => (
+                            <label key={index} className="text-[10px] font-bold uppercase text-on-surface-variant">Main slot {index + 1}
+                              <select aria-label={`Main bracket slot ${index + 1}`} value={source.kind === 'team' ? `team:${source.teamIndex}` : `preliminary:${source.matchIndex}`} onChange={(event) => { const [kind, rawIndex] = event.target.value.split(':'); setKnockoutSetup((current) => ({ ...current, mainSources: current.mainSources.map((entry, entryIndex) => entryIndex === index ? (kind === 'team' ? { kind: 'team', teamIndex: Number(rawIndex) } : { kind: 'preliminary', matchIndex: Number(rawIndex) }) : entry) })); }} className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs font-normal normal-case text-white">
+                                {seededPairs.map((pair, pairIndex) => <option key={`team-${pairIndex}`} value={`team:${pairIndex}`}>Pair #{pair.number}</option>)}
+                                {knockoutSetup.preliminaryPairs.map((_, preliminaryIndex) => <option key={`preliminary-${preliminaryIndex}`} value={`preliminary:${preliminaryIndex}`}>Winner of prelim {preliminaryIndex + 1}</option>)}
+                              </select>
+                            </label>
+                          ))}
+                        </div>
+                        {!isValidKnockoutSetup(manualPairs.length, knockoutSetup) && <p className="text-xs text-red-300">Use every pair and preliminary winner exactly once.</p>}
+                      </div>
+                    )}
+                    <button type="button" disabled={busy || !buildManualPairPayload(manualPairs, groupAPlayers.map((player) => player.id), groupBPlayers.map((player) => player.id)) || (session.format === 'knockout' && !isValidKnockoutSetup(manualPairs.length, knockoutSetup))} onClick={generateSchedule} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate {session.format === 'knockout' ? 'knockout bracket' : 'match schedule'}</button>
                   </div>
                 )}
               </>
             ) : (
               <>
-                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Live session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Scores save immediately to the public view. Ties are not accepted.</p></div>
+                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Live · {session.format === 'knockout' ? 'Knockout' : 'Round robin'}</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Scores save immediately to the public view. Ties are not accepted.</p></div>
                 <button type="button" disabled={busy} onClick={returnToAttendance} className="w-fit text-xs font-bold text-red-300 underline disabled:opacity-50">Return to attendance</button>
-                <div className="space-y-3">{session.matches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}</div>
+                {session.format === 'knockout' ? (
+                  <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                ) : (
+                  <div className="space-y-3">{session.matches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}</div>
+                )}
                 <button type="button" disabled={busy || session.matches.some((match) => match.status !== 'completed')} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'finalize', sessionId: session.id }) }), 'Session finalized and points awarded once.')} className="w-full rounded-lg bg-primary-fixed px-5 py-3 text-sm font-black text-on-primary-fixed disabled:cursor-not-allowed disabled:opacity-40">Finalize session and award points</button>
               </>
             )}

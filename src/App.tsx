@@ -15,15 +15,19 @@ interface PublicState {
   activeSession: null | {
     id: string;
     name: string;
-    teams: Array<{ id: string; members: Array<{ playerId: string; name: string }> }>;
+    format: 'round_robin' | 'knockout';
+    teams: Array<{ id: string; seed: number; members: Array<{ playerId: string; name: string }> }>;
     matches: Array<{
       id: string;
-      teamAId: string;
-      teamBId: string;
+      sequence: number;
+      teamAId: string | null;
+      teamBId: string | null;
       scoreA: number | null;
       scoreB: number | null;
       court: string | null;
       status: 'pending' | 'in_progress' | 'completed';
+      bracketRound: number | null;
+      bracketPosition: number | null;
     }>;
   };
 }
@@ -187,7 +191,7 @@ export default function App() {
         {screenMode === 'landing' && <LandingPage players={players} onNavigate={setScreenMode} lang={lang} setLang={setLang} seasonName={data?.season?.name} />}
         {screenMode === 'auth' && <AuthPage onSuccess={async () => loadAdmin()} onNavigate={setScreenMode} />}
         {screenMode === 'admin' && (membership ? <AdminDashboard membership={membership} onDataChanged={() => { void mutatePublic(); }} /> : <AuthPage onSuccess={async () => loadAdmin()} onNavigate={setScreenMode} />)}
-        {screenMode === 'player_mobile' && <MobileView players={players} matches={matches} lang={lang} setLang={setLang} />}
+        {screenMode === 'player_mobile' && <MobileView players={players} matches={matches} activeSession={data?.activeSession ?? null} lang={lang} setLang={setLang} />}
       </main>
 
       <footer className="mt-12 border-t border-outline-variant/20 bg-surface-container-lowest py-7">

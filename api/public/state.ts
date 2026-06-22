@@ -88,6 +88,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
       publicSession = {
         id: activeSession.id,
         name: activeSession.name,
+        format: activeSession.format,
         scheduledAt: activeSession.scheduledAt,
         status: activeSession.status,
         teams: sessionTeams.map((team) => ({

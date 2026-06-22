@@ -15,6 +15,13 @@
       "when": 1782097659063,
       "tag": "0001_dusty_the_hand",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782136992836,
+      "tag": "0002_strange_wiccan",
+      "breakpoints": true
     }
   ]
 }

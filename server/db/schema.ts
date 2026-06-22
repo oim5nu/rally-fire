@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   boolean,
   check,
   index,
@@ -18,6 +19,7 @@ import {
 export const adminRole = pgEnum('admin_role', ['superadmin', 'admin']);
 export const membershipStatus = pgEnum('membership_status', ['active', 'disabled']);
 export const seasonStatus = pgEnum('season_status', ['active', 'archived']);
+export const sessionFormat = pgEnum('session_format', ['round_robin', 'knockout']);
 export const participantStatus = pgEnum('participant_status', ['attendee', 'reserve']);
 export const skillGroup = pgEnum('skill_group', ['A', 'B']);
 export const playSessionStatus = pgEnum('play_session_status', [
@@ -28,6 +30,7 @@ export const playSessionStatus = pgEnum('play_session_status', [
   'voided',
 ]);
 export const matchStatus = pgEnum('match_status', ['pending', 'in_progress', 'completed']);
+export const winnerSlot = pgEnum('winner_slot', ['A', 'B']);
 export const ledgerReason = pgEnum('ledger_reason', [
   'opening_balance',
   'match_win',
@@ -137,6 +140,7 @@ export const playSessions = pgTable(
       .notNull()
       .references(() => seasons.id, { onDelete: 'restrict' }),
     name: text('name').notNull(),
+    format: sessionFormat('format').notNull().default('round_robin'),
     scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull(),
     status: playSessionStatus('status').notNull().default('draft'),
     winPointsSnapshot: numeric('win_points_snapshot', { precision: 12, scale: 1, mode: 'number' }).notNull(),
@@ -217,11 +221,13 @@ export const matches = pgTable(
       .references(() => playSessions.id, { onDelete: 'cascade' }),
     sequence: integer('sequence').notNull(),
     teamAId: uuid('team_a_id')
-      .notNull()
       .references(() => teams.id, { onDelete: 'restrict' }),
     teamBId: uuid('team_b_id')
-      .notNull()
       .references(() => teams.id, { onDelete: 'restrict' }),
+    bracketRound: integer('bracket_round'),
+    bracketPosition: integer('bracket_position'),
+    nextMatchId: uuid('next_match_id').references((): AnyPgColumn => matches.id, { onDelete: 'set null' }),
+    winnerToSlot: winnerSlot('winner_to_slot'),
     court: text('court'),
     scoreA: integer('score_a'),
     scoreB: integer('score_b'),
@@ -231,6 +237,10 @@ export const matches = pgTable(
   },
   (table) => [
     uniqueIndex('matches_session_sequence_unique').on(table.sessionId, table.sequence),
+    uniqueIndex('matches_session_bracket_position_unique')
+      .on(table.sessionId, table.bracketRound, table.bracketPosition)
+      .where(sql`${table.bracketRound} IS NOT NULL`),
+    index('matches_next_match_idx').on(table.nextMatchId),
     check('matches_different_teams', sql`${table.teamAId} <> ${table.teamBId}`),
     check(
       'matches_scores_range',
