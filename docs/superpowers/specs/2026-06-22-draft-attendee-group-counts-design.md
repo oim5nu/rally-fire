@@ -11,11 +11,12 @@ Show a live summary in the draft-session attendance panel so administrators can 
 - Treat a selected attendee with no manual group override as `Auto`.
 - Recalculate immediately when attendance or a group override changes.
 - Display the summary only while a session is in draft status.
+- Order active players by points from highest to lowest, using name A-Z to break point ties.
 
 ## Implementation
 
-Use a small pure counting helper derived from `selectedPlayers` and `groupOverrides`, then render its result in the existing draft-session panel. No API or database changes are needed.
+Use small pure helpers to derive counts and a sorted copy of active players, then render both in the existing draft-session panel. Sorting must not mutate SWR data. No API or database changes are needed.
 
 ## Testing
 
-Unit-test selected, unselected, manually grouped, and automatic attendees. Existing typecheck and production build must remain clean.
+Unit-test selected, unselected, manually grouped, and automatic attendees. Test points-descending ordering, name tie-breaking, and input immutability. Existing typecheck and production build must remain clean.
