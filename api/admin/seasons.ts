@@ -6,21 +6,22 @@ import { requireSuperadmin } from '../../server/auth/authorize.js';
 import { requireRequestAdmin } from '../../server/auth/request.js';
 import { getDatabase } from '../../server/db/client.js';
 import { auditLog, playSessions, seasons } from '../../server/db/schema.js';
+import { pointValueSchema } from '../../server/domain/points.js';
 
 const createSeasonSchema = z.object({
   name: z.string().trim().min(1).max(100),
   startsAt: z.iso.datetime(),
   endsAt: z.iso.datetime().nullable().optional(),
-  winPoints: z.number().int().nonnegative().default(150),
-  lossPoints: z.number().int().nonnegative().default(30),
+  winPoints: pointValueSchema.nonnegative().default(150),
+  lossPoints: pointValueSchema.nonnegative().default(30),
 });
 const updateSeasonSchema = z.object({
   seasonId: z.uuid(),
   name: z.string().trim().min(1).max(100).optional(),
   status: z.enum(['active', 'archived']).optional(),
   endsAt: z.iso.datetime().nullable().optional(),
-  winPoints: z.number().int().nonnegative().optional(),
-  lossPoints: z.number().int().nonnegative().optional(),
+  winPoints: pointValueSchema.nonnegative().optional(),
+  lossPoints: pointValueSchema.nonnegative().optional(),
 });
 
 export default async function handler(request: VercelRequest, response: VercelResponse) {

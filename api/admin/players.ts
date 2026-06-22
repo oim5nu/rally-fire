@@ -5,13 +5,14 @@ import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../s
 import { requireRequestAdmin } from '../../server/auth/request.js';
 import { getDatabase } from '../../server/db/client.js';
 import { auditLog, players, pointLedger, seasonRoster, seasons } from '../../server/db/schema.js';
+import { pointValueSchema } from '../../server/domain/points.js';
 
 const createPlayerSchema = z.object({
   name: z.string().trim().min(1).max(100),
   email: z.email().nullable().optional(),
   displayRating: z.string().trim().min(1).max(20),
   clubSkill: z.number().int().min(1).max(10),
-  openingPoints: z.number().int().default(0),
+  openingPoints: pointValueSchema.default(0),
 });
 const updatePlayerSchema = z.object({
   playerId: z.uuid(),
@@ -41,7 +42,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           displayRating: players.displayRating,
           clubSkill: players.clubSkill,
           active: players.active,
-          points: sql<number>`coalesce(sum(${pointLedger.points}), 0)::int`,
+          points: sql<number>`coalesce(sum(${pointLedger.points}), 0)`.mapWith(Number),
         })
         .from(seasonRoster)
         .innerJoin(players, eq(players.id, seasonRoster.playerId))

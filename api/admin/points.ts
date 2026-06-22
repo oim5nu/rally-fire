@@ -5,10 +5,11 @@ import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../s
 import { requireRequestAdmin } from '../../server/auth/request.js';
 import { getDatabase } from '../../server/db/client.js';
 import { auditLog, pointLedger, seasonRoster, seasons } from '../../server/db/schema.js';
+import { pointValueSchema } from '../../server/domain/points.js';
 
 const adjustmentSchema = z.object({
   playerId: z.uuid(),
-  points: z.number().int().refine((value) => value !== 0, 'Points cannot be zero.'),
+  points: pointValueSchema.refine((value) => value !== 0, 'Points cannot be zero.'),
   notes: z.string().trim().min(1).max(500),
   idempotencyKey: z.string().trim().min(8).max(200),
 });

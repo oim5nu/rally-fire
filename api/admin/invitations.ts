@@ -3,6 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api.js';
 import { requireSuperadmin } from '../../server/auth/authorize.js';
+import { invitationErrorResponse } from '../../server/auth/invitation-error.js';
 import { requireRequestAdmin } from '../../server/auth/request.js';
 import { getDatabase } from '../../server/db/client.js';
 import { adminMemberships, auditLog } from '../../server/db/schema.js';
@@ -66,6 +67,12 @@ export default async function handler(request: VercelRequest, response: VercelRe
 
     sendJson(response, 201, { membership });
   } catch (error) {
+    const invitationError = invitationErrorResponse(error);
+    if (invitationError) {
+      console.error(error);
+      sendJson(response, invitationError.status, invitationError.body);
+      return;
+    }
     handleApiError(error, response);
   }
 }

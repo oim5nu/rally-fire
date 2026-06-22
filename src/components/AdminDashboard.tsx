@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { adminRequest, ApiError } from '../lib/api';
+import DateTimePicker from './DateTimePicker';
 
 interface Membership {
   id: string;
@@ -135,6 +136,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const session = sessionData?.session ?? null;
   const [selectedPlayers, setSelectedPlayers] = useState<Set<string>>(new Set());
   const [groupOverrides, setGroupOverrides] = useState<Record<string, 'A' | 'B'>>({});
+  const [drawMethod, setDrawMethod] = useState<'points' | 'skill'>('points');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -351,10 +353,19 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
       {!activeSeason && membership.role === 'superadmin' && (
         <form onSubmit={createSeason} className="grid gap-4 rounded-2xl border border-primary-fixed/25 bg-surface-container p-6 md:grid-cols-2">
           <div className="md:col-span-2"><h2 className="text-xl font-black text-white">Create the first season</h2><p className="mt-1 text-sm text-on-surface-variant">The app starts empty. These award values are snapshotted into each new session.</p></div>
-          <input name="name" required placeholder="Season name" className="rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 text-white" />
-          <input name="startsAt" type="datetime-local" required className="rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 text-white" />
-          <input name="winPoints" type="number" min="0" defaultValue="150" required className="rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 text-white" />
-          <input name="lossPoints" type="number" min="0" defaultValue="30" required className="rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 text-white" />
+          <label className="text-xs font-bold uppercase tracking-wide text-on-surface-variant">
+            Season name
+            <input name="name" required placeholder="e.g. Winter League 2026" className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 font-normal normal-case tracking-normal text-white outline-none transition focus:border-primary-fixed focus:ring-2 focus:ring-primary-fixed/30" />
+          </label>
+          <DateTimePicker name="startsAt" label="Season starts" required />
+          <label className="text-xs font-bold uppercase tracking-wide text-on-surface-variant">
+            Winner points
+            <input name="winPoints" type="number" min="0" step="0.1" defaultValue="150" required className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 font-normal normal-case tracking-normal text-white outline-none transition focus:border-primary-fixed focus:ring-2 focus:ring-primary-fixed/30" />
+          </label>
+          <label className="text-xs font-bold uppercase tracking-wide text-on-surface-variant">
+            Loser points
+            <input name="lossPoints" type="number" min="0" step="0.1" defaultValue="30" required className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 font-normal normal-case tracking-normal text-white outline-none transition focus:border-primary-fixed focus:ring-2 focus:ring-primary-fixed/30" />
+          </label>
           <button disabled={busy} className="rounded-lg bg-primary-fixed px-5 py-3 text-sm font-black text-on-primary-fixed md:col-span-2 disabled:opacity-50">Create season</button>
         </form>
       )}
@@ -365,8 +376,8 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
             <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">{activeSeason.name}</p><h2 className="mt-1 text-xl font-black text-white">Season roster</h2></div>
             {membership.role === 'superadmin' && (
               <form onSubmit={updateSeason} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
-                <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Win points<input name="winPoints" type="number" min="0" defaultValue={activeSeason.winPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
-                <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Loss points<input name="lossPoints" type="number" min="0" defaultValue={activeSeason.lossPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
+                <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Win points<input name="winPoints" type="number" min="0" step="0.1" defaultValue={activeSeason.winPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
+                <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Loss points<input name="lossPoints" type="number" min="0" step="0.1" defaultValue={activeSeason.lossPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
                 <button disabled={busy} className="rounded border border-primary-fixed px-3 py-2 text-xs font-black text-primary-fixed disabled:opacity-50">Save</button>
               </form>
             )}
@@ -374,7 +385,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
               <input name="name" required placeholder="Player name" className="rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" />
               <input name="displayRating" required placeholder="Display rating, e.g. NTRP 4.0" className="rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" />
               <label className="text-xs text-on-surface-variant">Club skill 1-10<input name="clubSkill" type="number" min="1" max="10" defaultValue="5" required className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" /></label>
-              <label className="text-xs text-on-surface-variant">Opening points<input name="openingPoints" type="number" defaultValue="0" required className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" /></label>
+              <label className="text-xs text-on-surface-variant">Opening points<input name="openingPoints" type="number" step="0.1" defaultValue="0" required className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" /></label>
               <button disabled={busy} className="rounded-lg border border-primary-fixed px-4 py-2 text-sm font-black text-primary-fixed sm:col-span-2 disabled:opacity-50">Add player</button>
             </form>
             <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
@@ -385,7 +396,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
               <form onSubmit={adjustPoints} className="grid gap-2 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3 sm:grid-cols-2">
                 <p className="text-xs font-black text-white sm:col-span-2">Append point adjustment</p>
                 <select name="playerId" required className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{players.map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}</select>
-                <input name="points" type="number" required placeholder="Points, e.g. -10" className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white" />
+                <input name="points" type="number" step="0.1" required placeholder="Points, e.g. -10.5" className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white" />
                 <input name="notes" required placeholder="Reason for adjustment" className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white sm:col-span-2" />
                 <button disabled={busy} className="rounded border border-primary-fixed px-3 py-2 text-xs font-black text-primary-fixed sm:col-span-2 disabled:opacity-50">Add ledger entry</button>
               </form>
@@ -398,15 +409,18 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                 {session && <div className="rounded-lg border border-outline-variant/20 bg-surface-dim p-3 text-sm text-on-surface-variant">Previous session: <strong className="text-white">{session.name}</strong> ({session.status})</div>}
                 <form onSubmit={createSession} className="grid gap-3 sm:grid-cols-2">
                   <div className="sm:col-span-2"><h2 className="text-xl font-black text-white">Create play session</h2><p className="text-sm text-on-surface-variant">Only one session can be active at a time.</p></div>
-                  <input name="name" required placeholder="Wednesday Doubles" className="rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" />
-                  <input name="scheduledAt" type="datetime-local" required className="rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" />
+                  <label className="text-xs font-bold uppercase tracking-wide text-on-surface-variant">
+                    Session name
+                    <input name="name" required placeholder="Wednesday Doubles" className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-3 font-normal normal-case tracking-normal text-white outline-none transition focus:border-primary-fixed focus:ring-2 focus:ring-primary-fixed/30" />
+                  </label>
+                  <DateTimePicker name="scheduledAt" label="Scheduled date and time" required />
                   <button disabled={busy} className="rounded-lg bg-primary-fixed px-4 py-2 text-sm font-black text-on-primary-fixed sm:col-span-2 disabled:opacity-50">Create session</button>
                 </form>
                 {session?.status === 'finalized' && membership.role === 'superadmin' && <button type="button" disabled={busy} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'void', sessionId: session.id, reason: 'Voided by superadministrator from the control console', createReplacement: true }) }), 'Session voided and replacement draft created.')} className="text-xs font-bold text-red-300 underline">Void finalized session and create replacement</button>}
               </>
             ) : session.status === 'draft' ? (
               <>
-                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees. The server auto-groups by club skill; adjust A/B before drawing.</p></div>
+                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees. The server ranks by accumulated points by default, then securely pairs one player from each half.</p></div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {players.filter((player) => player.active).map((player) => (
                     <div key={player.id} className="flex items-center gap-2 rounded-lg bg-surface-dim/60 p-2">
@@ -418,7 +432,14 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button type="button" disabled={busy} onClick={saveParticipants} className="rounded-lg border border-primary-fixed px-4 py-2 text-xs font-black text-primary-fixed disabled:opacity-50">Save attendance</button>
-                  <button type="button" disabled={busy} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'draw', sessionId: session.id }) }), 'Secure draw published.')} className="rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate secure draw</button>
+                  <label className="flex items-center gap-2 text-xs font-bold text-on-surface-variant">
+                    Rank draw by
+                    <select value={drawMethod} onChange={(event) => setDrawMethod(event.target.value as 'points' | 'skill')} className="rounded-lg border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">
+                      <option value="points">Accumulated points</option>
+                      <option value="skill">Club skill</option>
+                    </select>
+                  </label>
+                  <button type="button" disabled={busy} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'draw', sessionId: session.id, method: drawMethod }) }), 'Secure draw published.')} className="rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate secure draw</button>
                 </div>
               </>
             ) : (

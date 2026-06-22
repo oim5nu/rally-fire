@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  assignSkillGroups,
+  assignRankedGroups,
   buildRoundRobinDraw,
   calculateMatchAwards,
   validateCompletedScore,
@@ -14,19 +14,35 @@ const players = [
 ];
 
 describe('attendance grouping', () => {
-  it('places the strongest half in A and the remaining half in B', () => {
-    expect(assignSkillGroups(players)).toEqual([
-      { ...players[0], group: 'A' },
-      { ...players[1], group: 'A' },
-      { ...players[2], group: 'B' },
-      { ...players[3], group: 'B' },
+  it('places the highest ranked half in A for either points or skill values', () => {
+    expect(assignRankedGroups(players.map((player) => ({ ...player, rankingValue: player.skill })))).toEqual([
+      { ...players[0], rankingValue: 10, group: 'A' },
+      { ...players[1], rankingValue: 8, group: 'A' },
+      { ...players[2], rankingValue: 5, group: 'B' },
+      { ...players[3], rankingValue: 2, group: 'B' },
+    ]);
+  });
+
+  it('breaks equal ranking values by name and then id', () => {
+    const tied = [
+      { id: 'p2', name: 'Beta', skill: 1, rankingValue: 50 },
+      { id: 'p3', name: 'Alpha', skill: 1, rankingValue: 50 },
+      { id: 'p1', name: 'Alpha', skill: 1, rankingValue: 50 },
+      { id: 'p4', name: 'Delta', skill: 1, rankingValue: 40 },
+    ];
+
+    expect(assignRankedGroups(tied).map(({ id, group }) => ({ id, group }))).toEqual([
+      { id: 'p1', group: 'A' },
+      { id: 'p3', group: 'A' },
+      { id: 'p2', group: 'B' },
+      { id: 'p4', group: 'B' },
     ]);
   });
 });
 
 describe('draw generation', () => {
   it('pairs shuffled A and B players and schedules every unique team matchup', () => {
-    const participants = assignSkillGroups(players);
+    const participants = assignRankedGroups(players.map((player) => ({ ...player, rankingValue: player.skill })));
     const draw = buildRoundRobinDraw(participants, () => 0);
 
     expect(draw.teams).toHaveLength(2);
@@ -67,7 +83,12 @@ describe('draw generation', () => {
       { id: 'p5', name: 'Five', skill: 4 },
       { id: 'p6', name: 'Six', skill: 1 },
     ];
-    expect(buildRoundRobinDraw(assignSkillGroups(sixPlayers), () => 0).matches).toHaveLength(3);
+    expect(
+      buildRoundRobinDraw(
+        assignRankedGroups(sixPlayers.map((player) => ({ ...player, rankingValue: player.skill }))),
+        () => 0,
+      ).matches,
+    ).toHaveLength(3);
   });
 });
 
@@ -87,14 +108,14 @@ describe('scores and awards', () => {
         teamBPlayerIds: ['p3', 'p4'],
         scoreA: 21,
         scoreB: 17,
-        winPoints: 150,
-        lossPoints: 30,
+        winPoints: 150.5,
+        lossPoints: 30.5,
       }),
     ).toEqual([
-      { playerId: 'p1', points: 150, reason: 'match_win', matchId: 'm1' },
-      { playerId: 'p2', points: 150, reason: 'match_win', matchId: 'm1' },
-      { playerId: 'p3', points: 30, reason: 'match_loss', matchId: 'm1' },
-      { playerId: 'p4', points: 30, reason: 'match_loss', matchId: 'm1' },
+      { playerId: 'p1', points: 150.5, reason: 'match_win', matchId: 'm1' },
+      { playerId: 'p2', points: 150.5, reason: 'match_win', matchId: 'm1' },
+      { playerId: 'p3', points: 30.5, reason: 'match_loss', matchId: 'm1' },
+      { playerId: 'p4', points: 30.5, reason: 'match_loss', matchId: 'm1' },
     ]);
   });
 });

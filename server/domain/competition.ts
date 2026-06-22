@@ -6,6 +6,10 @@ export interface SkillPlayer {
   skill: number;
 }
 
+export interface RankedPlayer extends SkillPlayer {
+  rankingValue: number;
+}
+
 export interface GroupedPlayer extends SkillPlayer {
   group: 'A' | 'B';
 }
@@ -20,9 +24,12 @@ export interface DrawMatch {
   sequence: number;
 }
 
-export function assignSkillGroups(players: SkillPlayer[]): GroupedPlayer[] {
+export function assignRankedGroups(players: RankedPlayer[]): GroupedPlayer[] {
   const sorted = [...players].sort(
-    (left, right) => right.skill - left.skill || left.name.localeCompare(right.name),
+    (left, right) =>
+      right.rankingValue - left.rankingValue
+      || left.name.localeCompare(right.name)
+      || left.id.localeCompare(right.id),
   );
   const groupASize = Math.ceil(sorted.length / 2);
 

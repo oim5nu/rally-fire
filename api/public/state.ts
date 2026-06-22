@@ -38,7 +38,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
         id: players.id,
         name: players.name,
         displayRating: players.displayRating,
-        points: sql<number>`coalesce(sum(${pointLedger.points}), 0)::int`,
+        points: sql<number>`coalesce(sum(${pointLedger.points}), 0)`.mapWith(Number),
       })
       .from(seasonRoster)
       .innerJoin(players, eq(players.id, seasonRoster.playerId))

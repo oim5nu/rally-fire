@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api.js';
 import { requireSuperadmin } from '../../server/auth/authorize.js';
@@ -18,7 +18,7 @@ import {
   teams,
 } from '../../server/db/schema.js';
 import {
-  assignSkillGroups,
+  assignRankedGroups,
   buildRoundRobinDraw,
   calculateMatchAwards,
   validateCompletedScore,
@@ -38,7 +38,11 @@ const actionSchema = z.discriminatedUnion('action', [
     reserveIds: z.array(z.uuid()).default([]),
     groupOverrides: z.record(z.uuid(), z.enum(['A', 'B'])).default({}),
   }),
-  z.object({ action: z.literal('draw'), sessionId: z.uuid() }),
+  z.object({
+    action: z.literal('draw'),
+    sessionId: z.uuid(),
+    method: z.enum(['points', 'skill']).default('points'),
+  }),
   z.object({
     action: z.literal('score'),
     matchId: z.uuid(),
@@ -194,7 +198,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
       }
       const rosterPlayers = uniqueIds.size
         ? await database
-            .select({ id: players.id, name: players.name, skill: players.clubSkill })
+            .select({ id: players.id, name: players.name })
             .from(seasonRoster)
             .innerJoin(players, eq(players.id, seasonRoster.playerId))
             .where(
@@ -209,13 +213,6 @@ export default async function handler(request: VercelRequest, response: VercelRe
         return;
       }
       const attendeeSet = new Set(input.attendeeIds);
-      const grouped = assignSkillGroups(rosterPlayers.filter((player) => attendeeSet.has(player.id)));
-      const groups = new Map(
-        grouped.map((player) => [
-          player.id,
-          input.groupOverrides[player.id] ?? player.group,
-        ]),
-      );
       await database.transaction(async (transaction) => {
         await transaction
           .delete(sessionParticipants)
@@ -226,7 +223,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
               sessionId: session.id,
               playerId: player.id,
               status: attendeeSet.has(player.id) ? ('attendee' as const) : ('reserve' as const),
-              group: groups.get(player.id) ?? null,
+              group: input.groupOverrides[player.id] ?? null,
             })),
           );
         }
@@ -258,24 +255,41 @@ export default async function handler(request: VercelRequest, response: VercelRe
           name: players.name,
           skill: players.clubSkill,
           group: sessionParticipants.group,
+          points: sql<number>`coalesce(sum(${pointLedger.points}), 0)`.mapWith(Number),
         })
         .from(sessionParticipants)
         .innerJoin(players, eq(players.id, sessionParticipants.playerId))
+        .leftJoin(
+          pointLedger,
+          and(
+            eq(pointLedger.playerId, players.id),
+            eq(pointLedger.seasonId, session.seasonId),
+          ),
+        )
         .where(
           and(
             eq(sessionParticipants.sessionId, session.id),
             eq(sessionParticipants.status, 'attendee'),
           ),
-        );
-      if (attendees.some((player) => !player.group)) {
-        sendJson(response, 409, { error: 'participant_group_required' });
-        return;
-      }
+        )
+        .groupBy(players.id, sessionParticipants.group);
+      const groupOverrides = new Map(
+        attendees
+          .filter((player) => player.group)
+          .map((player) => [player.id, player.group as 'A' | 'B']),
+      );
+      const grouped = assignRankedGroups(
+        attendees.map((player) => ({
+          ...player,
+          rankingValue: input.method === 'points' ? player.points : player.skill,
+        })),
+      ).map((player) => ({
+        ...player,
+        group: groupOverrides.get(player.id) ?? player.group,
+      }));
       let draw;
       try {
-        draw = buildRoundRobinDraw(
-          attendees.map((player) => ({ ...player, group: player.group as 'A' | 'B' })),
-        );
+        draw = buildRoundRobinDraw(grouped);
       } catch (error) {
         sendJson(response, 409, {
           error: 'invalid_draw',
@@ -284,6 +298,17 @@ export default async function handler(request: VercelRequest, response: VercelRe
         return;
       }
       await database.transaction(async (transaction) => {
+        for (const participant of grouped) {
+          await transaction
+            .update(sessionParticipants)
+            .set({ group: participant.group })
+            .where(
+              and(
+                eq(sessionParticipants.sessionId, session.id),
+                eq(sessionParticipants.playerId, participant.id),
+              ),
+            );
+        }
         await transaction.delete(matches).where(eq(matches.sessionId, session.id));
         await transaction.delete(teamMembers).where(eq(teamMembers.sessionId, session.id));
         await transaction.delete(teams).where(eq(teams.sessionId, session.id));
@@ -320,7 +345,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           action: 'session.draw_published',
           entityType: 'play_session',
           entityId: session.id,
-          details: { teamCount: draw.teams.length, matchCount: draw.matches.length },
+          details: { method: input.method, teamCount: draw.teams.length, matchCount: draw.matches.length },
         });
       });
       sendJson(response, 200, { session: await getSessionDetail(session.id) });
