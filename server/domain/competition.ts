@@ -25,6 +25,19 @@ export interface DrawMatch {
   sequence: number;
 }
 
+export function planAttendanceRollback(
+  status: string,
+  matchStatuses: readonly string[],
+) {
+  if (!['draw_published', 'in_progress'].includes(status)) {
+    throw new Error('Only a published or in progress session can return to attendance.');
+  }
+  return {
+    matchCount: matchStatuses.length,
+    scoredMatchCount: matchStatuses.filter((matchStatus) => matchStatus === 'completed').length,
+  };
+}
+
 export interface ConfiguredPair {
   number: number;
   groupAPlayerId: string;

@@ -5,8 +5,21 @@ import {
   buildDrawPersistenceRows,
   buildRoundRobinDraw,
   calculateMatchAwards,
+  planAttendanceRollback,
   validateCompletedScore,
 } from './competition';
+
+describe('attendance rollback', () => {
+  const matchStatuses = ['completed', 'pending', 'completed'] as const;
+
+  it.each(['draw_published', 'in_progress'] as const)('allows %s sessions and counts discarded scores', (status) => {
+    expect(planAttendanceRollback(status, matchStatuses)).toEqual({ matchCount: 3, scoredMatchCount: 2 });
+  });
+
+  it.each(['draft', 'finalized', 'voided'] as const)('rejects %s sessions', (status) => {
+    expect(() => planAttendanceRollback(status, matchStatuses)).toThrow(/published or in progress/i);
+  });
+});
 
 describe('configured draw', () => {
   const configuredPlayers = [

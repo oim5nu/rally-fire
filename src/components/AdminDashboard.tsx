@@ -382,6 +382,19 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     );
   }
 
+  async function returnToAttendance() {
+    if (!session || !window.confirm(
+      'Return to attendance? The current match schedule, courts, and all entered scores will be permanently discarded.',
+    )) return;
+    await runAction(
+      () => adminRequest('/api/admin/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'return_to_attendance', sessionId: session.id }),
+      }),
+      'Session returned to attendance. Configure groups and pairs again.',
+    );
+  }
+
   async function inviteAdmin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
@@ -569,6 +582,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
             ) : (
               <>
                 <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Live session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Scores save immediately to the public view. Ties are not accepted.</p></div>
+                <button type="button" disabled={busy} onClick={returnToAttendance} className="w-fit text-xs font-bold text-red-300 underline disabled:opacity-50">Return to attendance</button>
                 <div className="space-y-3">{session.matches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}</div>
                 <button type="button" disabled={busy || session.matches.some((match) => match.status !== 'completed')} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'finalize', sessionId: session.id }) }), 'Session finalized and points awarded once.')} className="w-full rounded-lg bg-primary-fixed px-5 py-3 text-sm font-black text-on-primary-fixed disabled:cursor-not-allowed disabled:opacity-40">Finalize session and award points</button>
               </>

@@ -21,6 +21,7 @@ import {
   buildConfiguredDraw,
   buildDrawPersistenceRows,
   calculateMatchAwards,
+  planAttendanceRollback,
   validateCompletedScore,
 } from '../../server/domain/competition.js';
 
@@ -55,6 +56,7 @@ const actionSchema = z.discriminatedUnion('action', [
     court: z.string().trim().max(30).nullable().optional(),
   }),
   z.object({ action: z.literal('finalize'), sessionId: z.uuid() }),
+  z.object({ action: z.literal('return_to_attendance'), sessionId: z.uuid() }),
   z.object({
     action: z.literal('void'),
     sessionId: z.uuid(),
@@ -368,6 +370,52 @@ export default async function handler(request: VercelRequest, response: VercelRe
         });
       });
       sendJson(response, 200, { session: await getSessionDetail(match.session.id) });
+      return;
+    }
+
+    if (input.action === 'return_to_attendance') {
+      const result = await database.transaction(
+        async (transaction) => {
+          const [session] = await transaction
+            .select()
+            .from(playSessions)
+            .where(eq(playSessions.id, input.sessionId))
+            .for('update')
+            .limit(1);
+          if (!session) return { error: 'rollbackable_session_required' as const };
+          const matchRows = await transaction
+            .select({ status: matches.status })
+            .from(matches)
+            .where(eq(matches.sessionId, session.id));
+          let rollback;
+          try {
+            rollback = planAttendanceRollback(session.status, matchRows.map((match) => match.status));
+          } catch {
+            return { error: 'rollbackable_session_required' as const };
+          }
+          await transaction.delete(matches).where(eq(matches.sessionId, session.id));
+          await transaction.delete(teamMembers).where(eq(teamMembers.sessionId, session.id));
+          await transaction.delete(teams).where(eq(teams.sessionId, session.id));
+          await transaction
+            .update(playSessions)
+            .set({ status: 'draft', updatedAt: new Date() })
+            .where(eq(playSessions.id, session.id));
+          await transaction.insert(auditLog).values({
+            actorMembershipId: admin.membership.id,
+            action: 'session.returned_to_attendance',
+            entityType: 'play_session',
+            entityId: session.id,
+            details: rollback,
+          });
+          return { sessionId: session.id };
+        },
+        { isolationLevel: 'serializable' },
+      );
+      if ('error' in result) {
+        sendJson(response, 409, result);
+        return;
+      }
+      sendJson(response, 200, { session: await getSessionDetail(result.sessionId) });
       return;
     }
 
