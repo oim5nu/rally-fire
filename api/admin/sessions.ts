@@ -383,17 +383,19 @@ export default async function handler(request: VercelRequest, response: VercelRe
             .for('update')
             .limit(1);
           if (!session) return { error: 'rollbackable_session_required' as const };
-          const matchRows = await transaction
-            .select({ status: matches.status })
-            .from(matches)
-            .where(eq(matches.sessionId, session.id));
-          let rollback;
           try {
-            rollback = planAttendanceRollback(session.status, matchRows.map((match) => match.status));
+            planAttendanceRollback(session.status, []);
           } catch {
             return { error: 'rollbackable_session_required' as const };
           }
-          await transaction.delete(matches).where(eq(matches.sessionId, session.id));
+          const deletedMatches = await transaction
+            .delete(matches)
+            .where(eq(matches.sessionId, session.id))
+            .returning({ status: matches.status });
+          const rollback = planAttendanceRollback(
+            session.status,
+            deletedMatches.map((match) => match.status),
+          );
           await transaction.delete(teamMembers).where(eq(teamMembers.sessionId, session.id));
           await transaction.delete(teams).where(eq(teams.sessionId, session.id));
           await transaction
@@ -415,7 +417,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
         sendJson(response, 409, result);
         return;
       }
-      sendJson(response, 200, { session: await getSessionDetail(result.sessionId) });
+      sendJson(response, 200, { sessionId: result.sessionId });
       return;
     }
 
