@@ -1,10 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
-import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api';
-import { requireSuperadmin } from '../../server/auth/authorize';
-import { requireRequestAdmin } from '../../server/auth/request';
-import { getDatabase } from '../../server/db/client';
+import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api.js';
+import { requireSuperadmin } from '../../server/auth/authorize.js';
+import { requireRequestAdmin } from '../../server/auth/request.js';
+import { getDatabase } from '../../server/db/client.js';
 import {
   auditLog,
   matches,
@@ -16,13 +16,13 @@ import {
   sessionParticipants,
   teamMembers,
   teams,
-} from '../../server/db/schema';
+} from '../../server/db/schema.js';
 import {
   assignSkillGroups,
   buildRoundRobinDraw,
   calculateMatchAwards,
   validateCompletedScore,
-} from '../../server/domain/competition';
+} from '../../server/domain/competition.js';
 
 const actionSchema = z.discriminatedUnion('action', [
   z.object({

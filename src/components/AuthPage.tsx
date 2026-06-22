@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { invitationCallbackError, waitForAuthSession } from '../lib/auth-session';
 import { getSupabaseBrowserClient } from '../lib/supabase';
 import type { ScreenMode } from '../types';
 
@@ -9,13 +10,34 @@ interface AuthPageProps {
 
 export default function AuthPage({ onSuccess, onNavigate }: AuthPageProps) {
   const setupMode = new URLSearchParams(window.location.search).get('setup') === '1';
+  const callbackError = useState(() =>
+    invitationCallbackError(window.location.search, window.location.hash),
+  )[0];
   const [mode, setMode] = useState<'login' | 'setup' | 'recovery'>(setupMode ? 'setup' : 'login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passwordConfirmation, setPasswordConfirmation] = useState('');
   const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(callbackError ?? '');
   const [busy, setBusy] = useState(false);
+  const [authReady, setAuthReady] = useState(!setupMode);
+
+  useEffect(() => {
+    if (!setupMode || callbackError) return;
+    let active = true;
+    void waitForAuthSession(getSupabaseBrowserClient().auth).then((hasSession) => {
+      if (!active) return;
+      setAuthReady(hasSession);
+      if (!hasSession) {
+        setError(
+          'The invitation did not establish a session. Request a new invitation and open only the newest link.',
+        );
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [callbackError, setupMode]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -33,6 +55,11 @@ export default function AuthPage({ onSuccess, onNavigate }: AuthPageProps) {
         return;
       }
       if (mode === 'setup') {
+        if (!(await waitForAuthSession(supabase.auth, 1_000))) {
+          throw new Error(
+            'The invitation session is missing or expired. Request a new invitation and open only the newest link.',
+          );
+        }
         if (password.length < 12) {
           throw new Error('Use at least 12 characters for the administrator password.');
         }
@@ -140,10 +167,18 @@ export default function AuthPage({ onSuccess, onNavigate }: AuthPageProps) {
           )}
           <button
             type="submit"
-            disabled={busy}
+            disabled={busy || (mode === 'setup' && !authReady)}
             className="w-full rounded-lg bg-primary-fixed px-5 py-3 text-sm font-extrabold text-on-primary-fixed transition hover:bg-primary-fixed-dim focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-fixed disabled:cursor-wait disabled:opacity-60"
           >
-            {busy ? 'Working...' : mode === 'setup' ? 'Set password and continue' : mode === 'recovery' ? 'Send recovery link' : 'Sign in'}
+            {busy
+              ? 'Working...'
+              : mode === 'setup' && !authReady && !callbackError
+                ? 'Checking invitation...'
+                : mode === 'setup'
+                  ? 'Set password and continue'
+                  : mode === 'recovery'
+                    ? 'Send recovery link'
+                    : 'Sign in'}
           </button>
         </form>
 

@@ -1,10 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api';
-import { requireRequestAdmin } from '../../server/auth/request';
-import { getDatabase } from '../../server/db/client';
-import { auditLog, players, pointLedger, seasonRoster, seasons } from '../../server/db/schema';
+import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api.js';
+import { requireRequestAdmin } from '../../server/auth/request.js';
+import { getDatabase } from '../../server/db/client.js';
+import { auditLog, players, pointLedger, seasonRoster, seasons } from '../../server/db/schema.js';
 
 const createPlayerSchema = z.object({
   name: z.string().trim().min(1).max(100),

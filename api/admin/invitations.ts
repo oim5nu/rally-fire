@@ -1,12 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api';
-import { requireSuperadmin } from '../../server/auth/authorize';
-import { requireRequestAdmin } from '../../server/auth/request';
-import { getDatabase } from '../../server/db/client';
-import { adminMemberships, auditLog } from '../../server/db/schema';
-import { getSupabaseAdminClient } from '../../server/supabase';
+import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api.js';
+import { requireSuperadmin } from '../../server/auth/authorize.js';
+import { requireRequestAdmin } from '../../server/auth/request.js';
+import { getDatabase } from '../../server/db/client.js';
+import { adminMemberships, auditLog } from '../../server/db/schema.js';
+import { getSupabaseAdminClient } from '../../server/supabase.js';
 
 const invitationSchema = z.object({
   email: z.email(),

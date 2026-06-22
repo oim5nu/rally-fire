@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { handleApiError, methodNotAllowed, sendJson } from '../../server/api';
-import { getDatabase } from '../../server/db/client';
+import { handleApiError, methodNotAllowed, sendJson } from '../../server/api.js';
+import { getDatabase } from '../../server/db/client.js';
 import {
   matches,
   players,
@@ -11,7 +11,7 @@ import {
   seasons,
   teamMembers,
   teams,
-} from '../../server/db/schema';
+} from '../../server/db/schema.js';
 
 export default async function handler(request: VercelRequest, response: VercelResponse) {
   if (request.method !== 'GET') {

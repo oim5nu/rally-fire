@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { handleApiError, methodNotAllowed, sendJson } from '../../server/api';
-import { requireRequestAdmin } from '../../server/auth/request';
+import { handleApiError, methodNotAllowed, sendJson } from '../../server/api.js';
+import { requireRequestAdmin } from '../../server/auth/request.js';
 
 export default async function handler(request: VercelRequest, response: VercelResponse) {
   if (request.method !== 'GET') {

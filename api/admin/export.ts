@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { handleApiError, methodNotAllowed, sendJson } from '../../server/api';
-import { requireSuperadmin } from '../../server/auth/authorize';
-import { requireRequestAdmin } from '../../server/auth/request';
-import { getDatabase } from '../../server/db/client';
+import { handleApiError, methodNotAllowed, sendJson } from '../../server/api.js';
+import { requireSuperadmin } from '../../server/auth/authorize.js';
+import { requireRequestAdmin } from '../../server/auth/request.js';
+import { getDatabase } from '../../server/db/client.js';
 import {
   adminMemberships,
   auditLog,
@@ -15,7 +15,7 @@ import {
   sessionParticipants,
   teamMembers,
   teams,
-} from '../../server/db/schema';
+} from '../../server/db/schema.js';
 
 export default async function handler(request: VercelRequest, response: VercelResponse) {
   if (request.method !== 'GET') {

@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "admin:invite-initial": "node scripts/invite-initial-admin.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

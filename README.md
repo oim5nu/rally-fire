@@ -25,7 +25,13 @@ RallyFire is a Vite/React competition dashboard deployed on Vercel. Supabase pro
 
 5. In **Authentication > Providers > Email**, turn off public user sign-ups. Administrator invitations sent through the service API still work.
 6. In **Authentication > URL Configuration**, add the production Vercel URL and `https://your-domain.example/?setup=1` as allowed redirect URLs. Add the equivalent development URLs only to the development Supabase project.
-7. In **Authentication > Users**, invite the address configured as `INITIAL_SUPERADMIN_EMAIL`. Open that email, follow the link, and set a password of at least 12 characters. Its first verified login bootstraps the superadmin membership and admin grant.
+7. After the first deployment, invite the configured address with an explicit setup redirect:
+
+   ```bash
+   pnpm admin:invite-initial -- 'https://your-project.vercel.app/?setup=1'
+   ```
+
+8. Open that email, follow the link, and set a password of at least 12 characters. Its first verified login bootstraps the superadmin membership and admin grant.
 
 After bootstrap, invite all other administrators from the RallyFire admin console. Do not create a database row or password hash manually.
 

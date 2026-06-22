@@ -1,8 +1,8 @@
 import type { VercelRequest } from '@vercel/node';
-import { getServerEnvironment } from '../env';
-import { verifyRequestIdentity } from '../supabase';
-import { authorizeAdminSession } from './authorize';
-import { DrizzleAdminAuthRepository } from './drizzle-repository';
+import { getServerEnvironment } from '../env.js';
+import { verifyRequestIdentity } from '../supabase.js';
+import { authorizeAdminSession } from './authorize.js';
+import { DrizzleAdminAuthRepository } from './drizzle-repository.js';
 
 export async function requireRequestAdmin(request: VercelRequest) {
   const environment = getServerEnvironment();

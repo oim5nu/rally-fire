@@ -1,11 +1,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
-import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api';
-import { requireSuperadmin } from '../../server/auth/authorize';
-import { requireRequestAdmin } from '../../server/auth/request';
-import { getDatabase } from '../../server/db/client';
-import { auditLog, playSessions, seasons } from '../../server/db/schema';
+import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api.js';
+import { requireSuperadmin } from '../../server/auth/authorize.js';
+import { requireRequestAdmin } from '../../server/auth/request.js';
+import { getDatabase } from '../../server/db/client.js';
+import { auditLog, playSessions, seasons } from '../../server/db/schema.js';
 
 const createSeasonSchema = z.object({
   name: z.string().trim().min(1).max(100),

@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ZodError } from 'zod';
-import { AdminAuthorizationError } from './auth/authorize';
+import { AdminAuthorizationError } from './auth/authorize.js';
 
 export class ApiConflictError extends Error {
   constructor(public readonly code: string, message: string) {

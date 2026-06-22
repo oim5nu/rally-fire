@@ -3,7 +3,7 @@ import {
   initialSuperadminRole,
   type AdminRole,
   type MembershipStatus,
-} from '../domain/admin-access';
+} from '../domain/admin-access.js';
 
 export interface VerifiedIdentity {
   userId: string;

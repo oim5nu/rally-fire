@@ -1,12 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { and, count, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
-import { ApiConflictError, handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api';
-import { requireSuperadmin } from '../../server/auth/authorize';
-import { requireRequestAdmin } from '../../server/auth/request';
-import { getDatabase } from '../../server/db/client';
-import { mayDisableMembership } from '../../server/domain/admin-access';
-import { adminMemberships, adminSessionGrants, auditLog } from '../../server/db/schema';
+import { ApiConflictError, handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api.js';
+import { requireSuperadmin } from '../../server/auth/authorize.js';
+import { requireRequestAdmin } from '../../server/auth/request.js';
+import { getDatabase } from '../../server/db/client.js';
+import { mayDisableMembership } from '../../server/domain/admin-access.js';
+import { adminMemberships, adminSessionGrants, auditLog } from '../../server/db/schema.js';
 
 const updateMembershipSchema = z
   .object({

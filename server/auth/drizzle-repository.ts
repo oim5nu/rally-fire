@@ -1,11 +1,11 @@
 import { count, eq } from 'drizzle-orm';
-import { getDatabase } from '../db/client';
-import { adminMemberships, adminSessionGrants } from '../db/schema';
+import { getDatabase } from '../db/client.js';
+import { adminMemberships, adminSessionGrants } from '../db/schema.js';
 import type {
   AdminAuthRepository,
   AdminMembership,
   AdminSessionGrant,
-} from './authorize';
+} from './authorize.js';
 
 function mapMembership(row: typeof adminMemberships.$inferSelect): AdminMembership {
   return {

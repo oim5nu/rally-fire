@@ -1,10 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api';
-import { requireRequestAdmin } from '../../server/auth/request';
-import { getDatabase } from '../../server/db/client';
-import { auditLog, pointLedger, seasonRoster, seasons } from '../../server/db/schema';
+import { handleApiError, methodNotAllowed, requestBody, sendJson } from '../../server/api.js';
+import { requireRequestAdmin } from '../../server/auth/request.js';
+import { getDatabase } from '../../server/db/client.js';
+import { auditLog, pointLedger, seasonRoster, seasons } from '../../server/db/schema.js';
 
 const adjustmentSchema = z.object({
   playerId: z.uuid(),

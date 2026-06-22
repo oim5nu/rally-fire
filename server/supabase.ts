@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest } from '@vercel/node';
-import { AdminAuthorizationError, type VerifiedIdentity } from './auth/authorize';
-import { extractBearerToken, readSessionId } from './auth/token';
-import { getServerEnvironment } from './env';
+import { AdminAuthorizationError, type VerifiedIdentity } from './auth/authorize.js';
+import { extractBearerToken, readSessionId } from './auth/token.js';
+import { getServerEnvironment } from './env.js';
 
 let adminClient: ReturnType<typeof createClient> | undefined;
 
