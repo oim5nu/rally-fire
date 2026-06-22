@@ -19,6 +19,7 @@ import {
 } from '../../server/db/schema.js';
 import {
   assignRankedGroups,
+  buildDrawPersistenceRows,
   buildRoundRobinDraw,
   calculateMatchAwards,
   validateCompletedScore,
@@ -297,43 +298,32 @@ export default async function handler(request: VercelRequest, response: VercelRe
         });
         return;
       }
+      const drawRows = buildDrawPersistenceRows(session.id, grouped, draw);
       await database.transaction(async (transaction) => {
-        for (const participant of grouped) {
-          await transaction
-            .update(sessionParticipants)
-            .set({ group: participant.group })
-            .where(
-              and(
-                eq(sessionParticipants.sessionId, session.id),
-                eq(sessionParticipants.playerId, participant.id),
-              ),
-            );
-        }
+        await transaction
+          .insert(sessionParticipants)
+          .values(drawRows.participants)
+          .onConflictDoUpdate({
+            target: [sessionParticipants.sessionId, sessionParticipants.playerId],
+            set: { group: sql`excluded.skill_group` },
+          });
         await transaction.delete(matches).where(eq(matches.sessionId, session.id));
         await transaction.delete(teamMembers).where(eq(teamMembers.sessionId, session.id));
         await transaction.delete(teams).where(eq(teams.sessionId, session.id));
-        const insertedTeams = [];
-        for (const [index, team] of draw.teams.entries()) {
-          const [insertedTeam] = await transaction
-            .insert(teams)
-            .values({ sessionId: session.id, seed: index + 1 })
-            .returning();
-          insertedTeams.push(insertedTeam);
-          await transaction.insert(teamMembers).values(
-            team.members.map((member) => ({
-              teamId: insertedTeam.id,
-              sessionId: session.id,
-              playerId: member.id,
-              group: member.group,
-            })),
-          );
-        }
+        const insertedTeams = await transaction.insert(teams).values(drawRows.teams).returning();
+        const teamsByIndex = new Map(insertedTeams.map((team) => [team.seed - 1, team]));
+        await transaction.insert(teamMembers).values(drawRows.members.map((member) => ({
+          teamId: teamsByIndex.get(member.teamIndex)!.id,
+          sessionId: member.sessionId,
+          playerId: member.playerId,
+          group: member.group,
+        })));
         await transaction.insert(matches).values(
-          draw.matches.map((match) => ({
+          drawRows.matches.map((match) => ({
             sessionId: session.id,
             sequence: match.sequence,
-            teamAId: insertedTeams[match.teamAIndex].id,
-            teamBId: insertedTeams[match.teamBIndex].id,
+            teamAId: teamsByIndex.get(match.teamAIndex)!.id,
+            teamBId: teamsByIndex.get(match.teamBIndex)!.id,
           })),
         );
         await transaction

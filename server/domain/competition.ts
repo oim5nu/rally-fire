@@ -24,6 +24,29 @@ export interface DrawMatch {
   sequence: number;
 }
 
+export function buildDrawPersistenceRows(
+  sessionId: string,
+  participants: GroupedPlayer[],
+  draw: { teams: DrawTeam[]; matches: DrawMatch[] },
+) {
+  return {
+    participants: participants.map((participant) => ({
+      sessionId,
+      playerId: participant.id,
+      status: 'attendee' as const,
+      group: participant.group,
+    })),
+    teams: draw.teams.map((_, index) => ({ sessionId, seed: index + 1 })),
+    members: draw.teams.flatMap((team, teamIndex) => team.members.map((member) => ({
+      teamIndex,
+      sessionId,
+      playerId: member.id,
+      group: member.group,
+    }))),
+    matches: draw.matches,
+  };
+}
+
 export function assignRankedGroups(players: RankedPlayer[]): GroupedPlayer[] {
   const sorted = [...players].sort(
     (left, right) =>

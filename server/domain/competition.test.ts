@@ -1,10 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import {
   assignRankedGroups,
+  buildDrawPersistenceRows,
   buildRoundRobinDraw,
   calculateMatchAwards,
   validateCompletedScore,
 } from './competition';
+
+describe('draw persistence rows', () => {
+  it('builds bulk rows for a complete draw', () => {
+    const participants = [
+      { id: 'a1', name: 'A1', skill: 8, group: 'A' as const },
+      { id: 'b1', name: 'B1', skill: 5, group: 'B' as const },
+      { id: 'a2', name: 'A2', skill: 7, group: 'A' as const },
+      { id: 'b2', name: 'B2', skill: 4, group: 'B' as const },
+    ];
+    const draw = {
+      teams: [
+        { members: [participants[0], participants[1]] as [typeof participants[0], typeof participants[1]] },
+        { members: [participants[2], participants[3]] as [typeof participants[2], typeof participants[3]] },
+      ],
+      matches: [{ teamAIndex: 0, teamBIndex: 1, sequence: 1 }],
+    };
+
+    expect(buildDrawPersistenceRows('session-1', participants, draw)).toEqual({
+      participants: participants.map((participant) => ({
+        sessionId: 'session-1',
+        playerId: participant.id,
+        status: 'attendee',
+        group: participant.group,
+      })),
+      teams: [{ sessionId: 'session-1', seed: 1 }, { sessionId: 'session-1', seed: 2 }],
+      members: [
+        { teamIndex: 0, sessionId: 'session-1', playerId: 'a1', group: 'A' },
+        { teamIndex: 0, sessionId: 'session-1', playerId: 'b1', group: 'B' },
+        { teamIndex: 1, sessionId: 'session-1', playerId: 'a2', group: 'A' },
+        { teamIndex: 1, sessionId: 'session-1', playerId: 'b2', group: 'B' },
+      ],
+      matches: [{ teamAIndex: 0, teamBIndex: 1, sequence: 1 }],
+    });
+  });
+});
 
 const players = [
   { id: 'p1', name: 'One', skill: 10 },
