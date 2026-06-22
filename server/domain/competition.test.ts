@@ -11,7 +11,17 @@ import {
   knockoutStageLabel,
   validateWinnerAdvancement,
   validateCompletedScore,
+  validateDraftFormatChange,
 } from './competition';
+
+describe('draft format changes', () => {
+  it('allows draft sessions and rejects every later state', () => {
+    expect(() => validateDraftFormatChange('draft')).not.toThrow();
+    for (const status of ['draw_published', 'in_progress', 'finalized', 'voided']) {
+      expect(() => validateDraftFormatChange(status)).toThrow(/draft/i);
+    }
+  });
+});
 
 describe('knockout winner advancement', () => {
   it('allows initial advancement and corrections before downstream scoring', () => {

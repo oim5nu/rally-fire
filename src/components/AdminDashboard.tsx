@@ -478,6 +478,17 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     );
   }
 
+  async function changeSessionFormat(format: AdminSession['format']) {
+    if (!session || format === session.format) return;
+    await runAction(
+      () => adminRequest('/api/admin/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'set_format', sessionId: session.id, format }),
+      }),
+      `Session format changed to ${format === 'knockout' ? 'knockout' : 'round robin'}.`,
+    );
+  }
+
   async function inviteAdmin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
@@ -635,7 +646,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
               </>
             ) : session.status === 'draft' ? (
               <>
-                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft · {session.format === 'knockout' ? 'Knockout' : 'Round robin'}</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees, assign every player to A or B, save attendance, then configure each numbered pair.</p></div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees, assign every player to A or B, save attendance, then configure each numbered pair.</p></div><label className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Competition format<select aria-label="Draft session competition format" value={session.format} disabled={busy} onChange={(event) => void changeSessionFormat(event.target.value as AdminSession['format'])} className="mt-1 block rounded-lg border border-primary-fixed/40 bg-surface-dim px-3 py-2 text-xs font-bold normal-case text-white disabled:opacity-50"><option value="round_robin">Round robin</option><option value="knockout">Knockout bracket</option></select></label></div>
                 <p className="text-sm font-bold text-white" aria-live="polite">
                   {attendeeGroups.attendees} attendees · A: {attendeeGroups.groupA} · B: {attendeeGroups.groupB} · Auto: {attendeeGroups.auto}
                 </p>

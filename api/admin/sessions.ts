@@ -25,6 +25,7 @@ import {
   calculateMatchAwards,
   planAttendanceRollback,
   validateCompletedScore,
+  validateDraftFormatChange,
   validateWinnerAdvancement,
   type KnockoutConfig,
 } from '../../server/domain/competition.js';
@@ -69,6 +70,11 @@ const actionSchema = z.discriminatedUnion('action', [
   }),
   z.object({ action: z.literal('finalize'), sessionId: z.uuid() }),
   z.object({ action: z.literal('return_to_attendance'), sessionId: z.uuid() }),
+  z.object({
+    action: z.literal('set_format'),
+    sessionId: z.uuid(),
+    format: z.enum(['round_robin', 'knockout']),
+  }),
   z.object({
     action: z.literal('void'),
     sessionId: z.uuid(),
@@ -197,6 +203,41 @@ export default async function handler(request: VercelRequest, response: VercelRe
         details: { seasonId: season.id },
       });
       sendJson(response, 201, { session });
+      return;
+    }
+
+    if (input.action === 'set_format') {
+      const result = await database.transaction(async (transaction) => {
+        const [session] = await transaction
+          .select()
+          .from(playSessions)
+          .where(eq(playSessions.id, input.sessionId))
+          .for('update')
+          .limit(1);
+        if (!session) return { error: 'draft_session_required' as const };
+        try {
+          validateDraftFormatChange(session.status);
+        } catch {
+          return { error: 'draft_session_required' as const };
+        }
+        await transaction
+          .update(playSessions)
+          .set({ format: input.format, updatedAt: new Date() })
+          .where(eq(playSessions.id, session.id));
+        await transaction.insert(auditLog).values({
+          actorMembershipId: admin.membership.id,
+          action: 'session.format_changed',
+          entityType: 'play_session',
+          entityId: session.id,
+          details: { from: session.format, to: input.format },
+        });
+        return { sessionId: session.id };
+      });
+      if ('error' in result) {
+        sendJson(response, 409, result);
+        return;
+      }
+      sendJson(response, 200, { session: await getSessionDetail(result.sessionId) });
       return;
     }
 

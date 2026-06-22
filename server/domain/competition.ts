@@ -38,6 +38,10 @@ export function planAttendanceRollback(
   };
 }
 
+export function validateDraftFormatChange(status: string): void {
+  if (status !== 'draft') throw new Error('Only a draft session can change competition format.');
+}
+
 export interface ConfiguredPair {
   number: number;
   groupAPlayerId: string;
