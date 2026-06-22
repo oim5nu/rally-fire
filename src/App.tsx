@@ -5,6 +5,7 @@ import AuthPage from './components/AuthPage';
 import LandingPage from './components/LandingPage';
 import MobileView from './components/MobileView';
 import { adminRequest, publicFetcher } from './lib/api';
+import { useActivity } from './lib/activity';
 import { getSupabaseBrowserClient } from './lib/supabase';
 import type { MatchPair, Player, ScreenMode } from './types';
 
@@ -52,17 +53,27 @@ function teamAsPlayer(team: { id: string; members: Array<{ name: string }> }): P
 }
 
 export default function App() {
+  const { begin, reportError, track } = useActivity();
   const [screenMode, setScreenMode] = useState<ScreenMode>(
     new URLSearchParams(window.location.search).has('setup') ? 'auth' : 'landing',
   );
   const [lang, setLang] = useState<'en' | 'zh'>('en');
   const [membership, setMembership] = useState<Membership | null>(null);
   const [authNotice, setAuthNotice] = useState('');
-  const { data, error: publicError, mutate: mutatePublic } = useSWR<PublicState>(
+  const { data, error: publicError, isLoading, isValidating, mutate: mutatePublic } = useSWR<PublicState>(
     '/api/public/state',
     publicFetcher,
     { refreshInterval: 10_000, revalidateOnFocus: true },
   );
+
+  useEffect(() => {
+    if (!isLoading && !isValidating) return;
+    return begin();
+  }, [begin, isLoading, isValidating]);
+
+  useEffect(() => {
+    if (publicError) reportError(publicError instanceof Error ? publicError.message : 'Live competition data is temporarily unavailable.');
+  }, [publicError, reportError]);
 
   const players = useMemo<Player[]>(() => {
     const leaderboard = data?.leaderboard ?? [];
@@ -101,17 +112,19 @@ export default function App() {
   }, [data?.activeSession]);
 
   const loadAdmin = useCallback(async () => {
-    const result = await adminRequest<{ membership: Membership }>('/api/admin/me');
-    setMembership(result.membership);
-    setAuthNotice('');
-    setScreenMode('admin');
-  }, []);
+    await track(async () => {
+      const result = await adminRequest<{ membership: Membership }>('/api/admin/me');
+      setMembership(result.membership);
+      setAuthNotice('');
+      setScreenMode('admin');
+    });
+  }, [track]);
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     void supabase.auth.getSession().then(({ data: sessionData }) => {
       if (sessionData.session && !new URLSearchParams(window.location.search).has('setup')) {
-        void loadAdmin().catch(() => undefined);
+        void loadAdmin().catch((caught) => reportError(caught instanceof Error ? caught.message : 'Administrator access could not be loaded.'));
       }
     });
     const { data: listener } = supabase.auth.onAuthStateChange((event) => {
@@ -129,12 +142,18 @@ export default function App() {
       listener.subscription.unsubscribe();
       window.removeEventListener('rallyfire:reauth', handleReauth);
     };
-  }, [loadAdmin]);
+  }, [loadAdmin, reportError]);
 
   async function handleLogout() {
-    await getSupabaseBrowserClient().auth.signOut({ scope: 'local' });
-    setMembership(null);
-    setScreenMode('landing');
+    try {
+      await track(async () => {
+        await getSupabaseBrowserClient().auth.signOut({ scope: 'local' });
+        setMembership(null);
+        setScreenMode('landing');
+      });
+    } catch (caught) {
+      reportError(caught instanceof Error ? caught.message : 'Logout failed.');
+    }
   }
 
   return (
@@ -164,7 +183,6 @@ export default function App() {
       </header>
 
       <main className="mx-auto w-full max-w-7xl flex-grow p-4 md:p-8">
-        {publicError && <div role="status" className="mb-4 rounded-lg border border-amber-500/30 bg-amber-950/30 p-3 text-sm text-amber-100">Live competition data is temporarily unavailable.</div>}
         {authNotice && screenMode === 'auth' && <div role="alert" className="mx-auto mb-4 max-w-4xl rounded-lg border border-amber-500/30 bg-amber-950/30 p-3 text-sm text-amber-100">{authNotice}</div>}
         {screenMode === 'landing' && <LandingPage players={players} onNavigate={setScreenMode} lang={lang} setLang={setLang} seasonName={data?.season?.name} />}
         {screenMode === 'auth' && <AuthPage onSuccess={async () => loadAdmin()} onNavigate={setScreenMode} />}

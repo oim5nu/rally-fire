@@ -4,7 +4,22 @@ import { AdminAuthorizationError, type VerifiedIdentity } from './auth/authorize
 import { extractBearerToken, readSessionId } from './auth/token.js';
 import { getServerEnvironment } from './env.js';
 
-let adminClient: ReturnType<typeof createClient> | undefined;
+interface SupabaseAdminClient {
+  auth: {
+    getUser: (jwt: string) => Promise<{
+      data: { user: { id: string; email?: string; email_confirmed_at?: string } | null };
+      error: Error | null;
+    }>;
+    admin: {
+      inviteUserByEmail: (email: string, options: { redirectTo?: string }) => Promise<{
+        data: { user: { id: string } | null };
+        error: Error | null;
+      }>;
+    };
+  };
+}
+
+let adminClient: SupabaseAdminClient | undefined;
 
 export function getSupabaseAdminClient() {
   if (!adminClient) {
@@ -15,7 +30,7 @@ export function getSupabaseAdminClient() {
         detectSessionInUrl: false,
         persistSession: false,
       },
-    });
+    }) as unknown as SupabaseAdminClient;
   }
   return adminClient;
 }

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { adminRequest, ApiError } from '../lib/api';
 import DateTimePicker from './DateTimePicker';
+import { useActivity } from '../lib/activity';
 
 interface Membership {
   id: string;
@@ -69,6 +70,7 @@ function MatchScoreRow({
   session: AdminSession;
   onSaved: () => Promise<void>;
 }) {
+  const { reportError, track } = useActivity();
   const [scoreA, setScoreA] = useState(match.scoreA?.toString() ?? '');
   const [scoreB, setScoreB] = useState(match.scoreB?.toString() ?? '');
   const [court, setCourt] = useState(match.court ?? '');
@@ -82,7 +84,7 @@ function MatchScoreRow({
     setBusy(true);
     setError('');
     try {
-      await adminRequest('/api/admin/sessions', {
+      await track(() => adminRequest('/api/admin/sessions', {
         method: 'POST',
         body: JSON.stringify({
           action: 'score',
@@ -91,10 +93,11 @@ function MatchScoreRow({
           scoreB: Number(scoreB),
           court: court || null,
         }),
-      });
+      }));
       await onSaved();
     } catch (caught) {
       setError(errorMessage(caught));
+      reportError(errorMessage(caught));
     } finally {
       setBusy(false);
     }
@@ -119,6 +122,7 @@ function MatchScoreRow({
 }
 
 export default function AdminDashboard({ membership, onDataChanged }: AdminDashboardProps) {
+  const { reportError, track } = useActivity();
   const { data: seasonData, mutate: mutateSeasons } = useSWR<{
     seasons: Array<{
       id: string;
@@ -154,6 +158,10 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     );
   }, [session, players]);
 
+  useEffect(() => {
+    if (playerError) reportError(errorMessage(playerError));
+  }, [playerError, reportError]);
+
   const stage = useMemo(() => {
     if (!activeSeason) return 0;
     if (!session || session.status === 'finalized' || session.status === 'voided') return 1;
@@ -172,12 +180,15 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     setError('');
     setNotice('');
     try {
-      await action();
-      await refreshAll();
+      await track(async () => {
+        await action();
+        await refreshAll();
+      });
       setNotice(success);
       return true;
     } catch (caught) {
       setError(errorMessage(caught));
+      reportError(errorMessage(caught));
       return false;
     } finally {
       setBusy(false);
@@ -318,7 +329,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
 
   async function downloadExport() {
     try {
-      const payload = await adminRequest<Record<string, unknown>>('/api/admin/export');
+      const payload = await track(() => adminRequest<Record<string, unknown>>('/api/admin/export'));
       const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -327,6 +338,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
       URL.revokeObjectURL(url);
     } catch (caught) {
       setError(errorMessage(caught));
+      reportError(errorMessage(caught));
     }
   }
 
@@ -348,7 +360,6 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
       </ol>
 
       {notice && <div role="status" className="rounded-xl border border-primary-fixed/30 bg-primary-fixed/10 p-4 text-sm text-white">{notice}</div>}
-      {(error || playerError) && <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/40 p-4 text-sm text-red-200">{error || errorMessage(playerError)}</div>}
 
       {!activeSeason && membership.role === 'superadmin' && (
         <form onSubmit={createSeason} className="grid gap-4 rounded-2xl border border-primary-fixed/25 bg-surface-container p-6 md:grid-cols-2">

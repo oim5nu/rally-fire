@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { invitationCallbackError, waitForAuthSession } from '../lib/auth-session';
 import { getSupabaseBrowserClient } from '../lib/supabase';
+import { useActivity } from '../lib/activity';
 import type { ScreenMode } from '../types';
 
 interface AuthPageProps {
@@ -9,6 +10,7 @@ interface AuthPageProps {
 }
 
 export default function AuthPage({ onSuccess, onNavigate }: AuthPageProps) {
+  const { reportError, track } = useActivity();
   const setupMode = new URLSearchParams(window.location.search).get('setup') === '1';
   const callbackError = useState(() =>
     invitationCallbackError(window.location.search, window.location.hash),
@@ -44,40 +46,46 @@ export default function AuthPage({ onSuccess, onNavigate }: AuthPageProps) {
     setBusy(true);
     setError('');
     setMessage('');
+    if (mode === 'setup' && password.length < 12) {
+      setError('Use at least 12 characters for the administrator password.');
+      setBusy(false);
+      return;
+    }
+    if (mode === 'setup' && password !== passwordConfirmation) {
+      setError('The passwords do not match.');
+      setBusy(false);
+      return;
+    }
     try {
-      const supabase = getSupabaseBrowserClient();
-      if (mode === 'recovery') {
-        const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: `${window.location.origin}/?setup=1`,
-        });
-        if (resetError) throw resetError;
-        setMessage('Check your email for the secure password reset link.');
-        return;
-      }
-      if (mode === 'setup') {
-        if (!(await waitForAuthSession(supabase.auth, 1_000))) {
-          throw new Error(
-            'The invitation session is missing or expired. Request a new invitation and open only the newest link.',
-          );
+      await track(async () => {
+        const supabase = getSupabaseBrowserClient();
+        if (mode === 'recovery') {
+          const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+            redirectTo: `${window.location.origin}/?setup=1`,
+          });
+          if (resetError) throw resetError;
+          setMessage('Check your email for the secure password reset link.');
+          return;
         }
-        if (password.length < 12) {
-          throw new Error('Use at least 12 characters for the administrator password.');
+        if (mode === 'setup') {
+          if (!(await waitForAuthSession(supabase.auth, 1_000))) {
+            throw new Error(
+              'The invitation session is missing or expired. Request a new invitation and open only the newest link.',
+            );
+          }
+          const { data, error: updateError } = await supabase.auth.updateUser({ password });
+          if (updateError) throw updateError;
+          window.history.replaceState({}, '', window.location.pathname);
+          await onSuccess(data.user.email ?? email);
+          return;
         }
-        if (password !== passwordConfirmation) {
-          throw new Error('The passwords do not match.');
-        }
-        const { data, error: updateError } = await supabase.auth.updateUser({ password });
-        if (updateError) throw updateError;
-        window.history.replaceState({}, '', window.location.pathname);
-        await onSuccess(data.user.email ?? email);
-        return;
-      }
 
-      const { data, error: loginError } = await supabase.auth.signInWithPassword({ email, password });
-      if (loginError) throw loginError;
-      await onSuccess(data.user.email ?? email);
+        const { data, error: loginError } = await supabase.auth.signInWithPassword({ email, password });
+        if (loginError) throw loginError;
+        await onSuccess(data.user.email ?? email);
+      });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Authentication failed.');
+      reportError(caught instanceof Error ? caught.message : 'Authentication failed.');
     } finally {
       setBusy(false);
     }
