@@ -1,11 +1,44 @@
 import { describe, expect, it } from 'vitest';
 import {
   assignRankedGroups,
+  buildConfiguredDraw,
   buildDrawPersistenceRows,
   buildRoundRobinDraw,
   calculateMatchAwards,
   validateCompletedScore,
 } from './competition';
+
+describe('configured draw', () => {
+  const configuredPlayers = [
+    { id: 'a1', name: 'A1', skill: 8, group: 'A' as const },
+    { id: 'a2', name: 'A2', skill: 7, group: 'A' as const },
+    { id: 'b1', name: 'B1', skill: 5, group: 'B' as const },
+    { id: 'b2', name: 'B2', skill: 4, group: 'B' as const },
+  ];
+  const pairs = [
+    { number: 4, groupAPlayerId: 'a1', groupBPlayerId: 'b2' },
+    { number: 2, groupAPlayerId: 'a2', groupBPlayerId: 'b1' },
+  ];
+
+  it('builds numbered teams in number order and schedules every matchup', () => {
+    const draw = buildConfiguredDraw(configuredPlayers, pairs);
+
+    expect(draw.teams.map((team) => ({ number: team.number, ids: team.members.map((member) => member.id) }))).toEqual([
+      { number: 2, ids: ['a2', 'b1'] },
+      { number: 4, ids: ['a1', 'b2'] },
+    ]);
+    expect(draw.matches).toEqual([{ teamAIndex: 0, teamBIndex: 1, sequence: 1 }]);
+  });
+
+  it.each([
+    ['duplicate pair numbers', [{ ...pairs[0] }, { ...pairs[1], number: 4 }]],
+    ['reused players', [{ ...pairs[0] }, { ...pairs[1], groupAPlayerId: 'a1' }]],
+    ['missing players', [pairs[0]]],
+    ['wrong groups', [{ ...pairs[0], groupAPlayerId: 'b1' }, pairs[1]]],
+  ])('rejects %s', (_label, invalidPairs) => {
+    expect(() => buildConfiguredDraw(configuredPlayers, invalidPairs)).toThrow();
+  });
+});
 
 describe('draw persistence rows', () => {
   it('builds bulk rows for a complete draw', () => {

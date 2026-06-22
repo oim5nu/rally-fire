@@ -55,6 +55,12 @@ interface AdminDashboardProps {
   onDataChanged: () => void;
 }
 
+export interface ManualPairRow {
+  number: string;
+  groupAPlayerId: string;
+  groupBPlayerId: string;
+}
+
 const adminFetcher = <T,>(url: string) => adminRequest<T>(url);
 
 function errorMessage(error: unknown) {
@@ -105,13 +111,13 @@ function MatchScoreRow({
 
   return (
     <form onSubmit={saveScore} className="grid gap-3 rounded-xl border border-outline-variant/20 bg-surface-dim/60 p-4 lg:grid-cols-[1fr_auto_1fr_auto] lg:items-center">
-      <p className="text-sm font-bold text-white">{teamA?.members.map((member) => member.name).join(' / ')}</p>
+      <p className="text-sm font-bold text-white">{teamA && `#${teamA.seed} ${teamA.members.map((member) => member.name).join(' / ')}`}</p>
       <div className="flex items-center gap-2">
         <input aria-label={`Match ${match.sequence} team A score`} type="number" min="0" max="99" required value={scoreA} onChange={(event) => setScoreA(event.target.value)} className="w-16 rounded-lg border border-outline-variant bg-surface-container px-2 py-2 text-center text-white" />
         <span className="text-on-surface-variant">:</span>
         <input aria-label={`Match ${match.sequence} team B score`} type="number" min="0" max="99" required value={scoreB} onChange={(event) => setScoreB(event.target.value)} className="w-16 rounded-lg border border-outline-variant bg-surface-container px-2 py-2 text-center text-white" />
       </div>
-      <p className="text-sm font-bold text-white lg:text-right">{teamB?.members.map((member) => member.name).join(' / ')}</p>
+      <p className="text-sm font-bold text-white lg:text-right">{teamB && `#${teamB.seed} ${teamB.members.map((member) => member.name).join(' / ')}`}</p>
       <div className="flex gap-2">
         <input aria-label={`Match ${match.sequence} court`} value={court} onChange={(event) => setCourt(event.target.value)} placeholder="Court" className="w-20 rounded-lg border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white" />
         <button disabled={busy} className="rounded-lg bg-primary-fixed px-3 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">{match.status === 'completed' ? 'Update' : 'Save'}</button>
@@ -147,6 +153,38 @@ export function sortPlayersByPoints(players: readonly AdminPlayer[]): AdminPlaye
   );
 }
 
+export function createManualPairRows(groupAIds: string[], groupBIds: string[]): ManualPairRow[] {
+  if (groupAIds.length !== groupBIds.length) return [];
+  return groupAIds.map((groupAPlayerId, index) => ({
+    number: String(index + 1),
+    groupAPlayerId,
+    groupBPlayerId: groupBIds[index],
+  }));
+}
+
+export function buildManualPairPayload(
+  rows: ManualPairRow[],
+  groupAIds: string[],
+  groupBIds: string[],
+) {
+  if (rows.length < 2 || rows.length !== groupAIds.length || rows.length !== groupBIds.length) return null;
+  const numbers = rows.map((row) => Number(row.number));
+  const selectedA = rows.map((row) => row.groupAPlayerId);
+  const selectedB = rows.map((row) => row.groupBPlayerId);
+  const sameIds = (selected: string[], expected: string[]) =>
+    selected.length === new Set(selected).size
+    && [...selected].sort().join('\0') === [...expected].sort().join('\0');
+  if (numbers.some((number) => !Number.isInteger(number) || number < 1)
+    || new Set(numbers).size !== numbers.length
+    || !sameIds(selectedA, groupAIds)
+    || !sameIds(selectedB, groupBIds)) return null;
+  return rows.map((row, index) => ({
+    number: numbers[index],
+    groupAPlayerId: row.groupAPlayerId,
+    groupBPlayerId: row.groupBPlayerId,
+  }));
+}
+
 export default function AdminDashboard({ membership, onDataChanged }: AdminDashboardProps) {
   const { reportError, track } = useActivity();
   const { data: seasonData, mutate: mutateSeasons } = useSWR<{
@@ -166,7 +204,8 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const session = sessionData?.session ?? null;
   const [selectedPlayers, setSelectedPlayers] = useState<Set<string>>(new Set());
   const [groupOverrides, setGroupOverrides] = useState<Record<string, 'A' | 'B'>>({});
-  const [drawMethod, setDrawMethod] = useState<'points' | 'skill'>('points');
+  const [manualPairs, setManualPairs] = useState<ManualPairRow[]>([]);
+  const [attendanceDirty, setAttendanceDirty] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -184,7 +223,18 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
           .map((participant) => [participant.playerId, participant.group!]),
       ),
     );
+    setAttendanceDirty(attendees.length === 0);
   }, [session, players]);
+
+  const groupAPlayers = sortedPlayers.filter((player) => selectedPlayers.has(player.id) && groupOverrides[player.id] === 'A');
+  const groupBPlayers = sortedPlayers.filter((player) => selectedPlayers.has(player.id) && groupOverrides[player.id] === 'B');
+
+  useEffect(() => {
+    setManualPairs(createManualPairRows(
+      groupAPlayers.map((player) => player.id),
+      groupBPlayers.map((player) => player.id),
+    ));
+  }, [selectedPlayers, groupOverrides, players]);
 
   useEffect(() => {
     if (playerError) reportError(errorMessage(playerError));
@@ -294,7 +344,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   async function saveParticipants() {
     if (!session) return;
     const attendeeIds = [...selectedPlayers];
-    await runAction(
+    const succeeded = await runAction(
       () => adminRequest('/api/admin/sessions', {
         method: 'POST',
         body: JSON.stringify({
@@ -306,6 +356,29 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
         }),
       }),
       'Attendance and groups saved.',
+    );
+    if (succeeded) setAttendanceDirty(false);
+  }
+
+  async function generateSchedule() {
+    if (!session) return;
+    const pairs = buildManualPairPayload(
+      manualPairs,
+      groupAPlayers.map((player) => player.id),
+      groupBPlayers.map((player) => player.id),
+    );
+    if (!pairs) {
+      const message = 'Assign every attendee once, with unique positive pair numbers.';
+      setError(message);
+      reportError(message);
+      return;
+    }
+    await runAction(
+      () => adminRequest('/api/admin/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'draw', sessionId: session.id, pairs }),
+      }),
+      'Match schedule published.',
     );
   }
 
@@ -459,30 +532,39 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
               </>
             ) : session.status === 'draft' ? (
               <>
-                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees. The server ranks by accumulated points by default, then securely pairs one player from each half.</p></div>
+                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees, assign every player to A or B, save attendance, then configure each numbered pair.</p></div>
                 <p className="text-sm font-bold text-white" aria-live="polite">
                   {attendeeGroups.attendees} attendees · A: {attendeeGroups.groupA} · B: {attendeeGroups.groupB} · Auto: {attendeeGroups.auto}
                 </p>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {sortedPlayers.filter((player) => player.active).map((player) => (
                     <div key={player.id} className="flex items-center gap-2 rounded-lg bg-surface-dim/60 p-2">
-                      <input type="checkbox" checked={selectedPlayers.has(player.id)} onChange={(event) => setSelectedPlayers((current) => { const next = new Set(current); event.target.checked ? next.add(player.id) : next.delete(player.id); return next; })} aria-label={`Include ${player.name}`} />
+                      <input type="checkbox" checked={selectedPlayers.has(player.id)} onChange={(event) => { setAttendanceDirty(true); setSelectedPlayers((current) => { const next = new Set(current); event.target.checked ? next.add(player.id) : next.delete(player.id); return next; }); }} aria-label={`Include ${player.name}`} />
                       <span className="min-w-0 flex-1 truncate text-sm font-bold text-white">{player.name}</span>
-                      {selectedPlayers.has(player.id) && <select aria-label={`${player.name} group`} value={groupOverrides[player.id] ?? ''} onChange={(event) => setGroupOverrides((current) => ({ ...current, [player.id]: event.target.value as 'A' | 'B' }))} className="rounded border border-outline-variant bg-surface-container px-1 py-1 text-xs text-white"><option value="">Auto</option><option value="A">A</option><option value="B">B</option></select>}
+                      {selectedPlayers.has(player.id) && <select aria-label={`${player.name} group`} value={groupOverrides[player.id] ?? ''} onChange={(event) => { setAttendanceDirty(true); setGroupOverrides((current) => { const next = { ...current }; if (event.target.value) next[player.id] = event.target.value as 'A' | 'B'; else delete next[player.id]; return next; }); }} className="rounded border border-outline-variant bg-surface-container px-1 py-1 text-xs text-white"><option value="">Auto</option><option value="A">A</option><option value="B">B</option></select>}
                     </div>
                   ))}
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" disabled={busy} onClick={saveParticipants} className="rounded-lg border border-primary-fixed px-4 py-2 text-xs font-black text-primary-fixed disabled:opacity-50">Save attendance</button>
-                  <label className="flex items-center gap-2 text-xs font-bold text-on-surface-variant">
-                    Rank draw by
-                    <select value={drawMethod} onChange={(event) => setDrawMethod(event.target.value as 'points' | 'skill')} className="rounded-lg border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">
-                      <option value="points">Accumulated points</option>
-                      <option value="skill">Club skill</option>
-                    </select>
-                  </label>
-                  <button type="button" disabled={busy} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'draw', sessionId: session.id, method: drawMethod }) }), 'Secure draw published.')} className="rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate secure draw</button>
-                </div>
+                <button type="button" disabled={busy} onClick={saveParticipants} className="rounded-lg border border-primary-fixed px-4 py-2 text-xs font-black text-primary-fixed disabled:opacity-50">Save attendance</button>
+                {attendanceDirty ? (
+                  <p className="text-xs text-amber-200">Save attendance and groups before configuring pairs.</p>
+                ) : attendeeGroups.auto > 0 ? (
+                  <p className="text-xs text-amber-200">Assign every attendee explicitly to A or B.</p>
+                ) : groupAPlayers.length !== groupBPlayers.length || groupAPlayers.length < 2 ? (
+                  <p className="text-xs text-amber-200">Groups A and B must be equal and contain at least two players each.</p>
+                ) : (
+                  <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
+                    <h3 className="text-sm font-black text-white">Configure numbered pairs</h3>
+                    {manualPairs.map((pair, index) => (
+                      <div key={index} className="grid grid-cols-[5rem_1fr_1fr] gap-2">
+                        <input aria-label={`Pair ${index + 1} number`} type="number" min="1" step="1" value={pair.number} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, number: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white" />
+                        <select aria-label={`Pair ${index + 1} group A player`} value={pair.groupAPlayerId} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, groupAPlayerId: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{groupAPlayers.map((player) => <option key={player.id} value={player.id}>A · {player.name}</option>)}</select>
+                        <select aria-label={`Pair ${index + 1} group B player`} value={pair.groupBPlayerId} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, groupBPlayerId: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{groupBPlayers.map((player) => <option key={player.id} value={player.id}>B · {player.name}</option>)}</select>
+                      </div>
+                    ))}
+                    <button type="button" disabled={busy || !buildManualPairPayload(manualPairs, groupAPlayers.map((player) => player.id), groupBPlayers.map((player) => player.id))} onClick={generateSchedule} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate match schedule</button>
+                  </div>
+                )}
               </>
             ) : (
               <>

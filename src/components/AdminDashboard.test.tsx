@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { countAttendeeGroups, sortPlayersByPoints } from './AdminDashboard';
+import {
+  buildManualPairPayload,
+  countAttendeeGroups,
+  createManualPairRows,
+  sortPlayersByPoints,
+} from './AdminDashboard';
 
 describe('countAttendeeGroups', () => {
   it('counts selected manual groups and automatic attendees', () => {
@@ -36,5 +41,24 @@ describe('sortPlayersByPoints', () => {
       'low',
     ]);
     expect(players.map((player) => player.id)).toEqual(originalOrder);
+  });
+});
+
+describe('manual pairing', () => {
+  it('creates numbered rows from equally sized A and B groups', () => {
+    expect(createManualPairRows(['a1', 'a2'], ['b1', 'b2'])).toEqual([
+      { number: '1', groupAPlayerId: 'a1', groupBPlayerId: 'b1' },
+      { number: '2', groupAPlayerId: 'a2', groupBPlayerId: 'b2' },
+    ]);
+  });
+
+  it('builds a payload only when every player and pair number is unique', () => {
+    const rows = createManualPairRows(['a1', 'a2'], ['b1', 'b2']);
+    expect(buildManualPairPayload(rows, ['a1', 'a2'], ['b1', 'b2'])).toEqual([
+      { number: 1, groupAPlayerId: 'a1', groupBPlayerId: 'b1' },
+      { number: 2, groupAPlayerId: 'a2', groupBPlayerId: 'b2' },
+    ]);
+    expect(buildManualPairPayload([{ ...rows[0] }, { ...rows[1], number: '1' }], ['a1', 'a2'], ['b1', 'b2'])).toBeNull();
+    expect(buildManualPairPayload([{ ...rows[0] }, { ...rows[1], groupAPlayerId: 'a1' }], ['a1', 'a2'], ['b1', 'b2'])).toBeNull();
   });
 });

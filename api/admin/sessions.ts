@@ -18,9 +18,8 @@ import {
   teams,
 } from '../../server/db/schema.js';
 import {
-  assignRankedGroups,
+  buildConfiguredDraw,
   buildDrawPersistenceRows,
-  buildRoundRobinDraw,
   calculateMatchAwards,
   validateCompletedScore,
 } from '../../server/domain/competition.js';
@@ -42,7 +41,11 @@ const actionSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('draw'),
     sessionId: z.uuid(),
-    method: z.enum(['points', 'skill']).default('points'),
+    pairs: z.array(z.object({
+      number: z.number().int().positive(),
+      groupAPlayerId: z.uuid(),
+      groupBPlayerId: z.uuid(),
+    })).min(2),
   }),
   z.object({
     action: z.literal('score'),
@@ -256,41 +259,24 @@ export default async function handler(request: VercelRequest, response: VercelRe
           name: players.name,
           skill: players.clubSkill,
           group: sessionParticipants.group,
-          points: sql<number>`coalesce(sum(${pointLedger.points}), 0)`.mapWith(Number),
         })
         .from(sessionParticipants)
         .innerJoin(players, eq(players.id, sessionParticipants.playerId))
-        .leftJoin(
-          pointLedger,
-          and(
-            eq(pointLedger.playerId, players.id),
-            eq(pointLedger.seasonId, session.seasonId),
-          ),
-        )
         .where(
           and(
             eq(sessionParticipants.sessionId, session.id),
             eq(sessionParticipants.status, 'attendee'),
           ),
-        )
-        .groupBy(players.id, sessionParticipants.group);
-      const groupOverrides = new Map(
-        attendees
-          .filter((player) => player.group)
-          .map((player) => [player.id, player.group as 'A' | 'B']),
-      );
-      const grouped = assignRankedGroups(
-        attendees.map((player) => ({
-          ...player,
-          rankingValue: input.method === 'points' ? player.points : player.skill,
-        })),
-      ).map((player) => ({
-        ...player,
-        group: groupOverrides.get(player.id) ?? player.group,
-      }));
+        );
       let draw;
       try {
-        draw = buildRoundRobinDraw(grouped);
+        if (attendees.some((player) => !player.group)) {
+          throw new Error('Every attendee must have an explicit A or B group before pairing.');
+        }
+        draw = buildConfiguredDraw(
+          attendees.map((player) => ({ ...player, group: player.group as 'A' | 'B' })),
+          input.pairs,
+        );
       } catch (error) {
         sendJson(response, 409, {
           error: 'invalid_draw',
@@ -298,6 +284,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
         });
         return;
       }
+      const grouped = draw.teams.flatMap((team) => team.members);
       const drawRows = buildDrawPersistenceRows(session.id, grouped, draw);
       await database.transaction(async (transaction) => {
         await transaction
@@ -335,7 +322,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           action: 'session.draw_published',
           entityType: 'play_session',
           entityId: session.id,
-          details: { method: input.method, teamCount: draw.teams.length, matchCount: draw.matches.length },
+          details: { pairing: 'manual', teamCount: draw.teams.length, matchCount: draw.matches.length },
         });
       });
       sendJson(response, 200, { session: await getSessionDetail(session.id) });

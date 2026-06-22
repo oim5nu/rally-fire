@@ -15,6 +15,7 @@ export interface GroupedPlayer extends SkillPlayer {
 }
 
 export interface DrawTeam {
+  number?: number;
   members: [GroupedPlayer, GroupedPlayer];
 }
 
@@ -22,6 +23,55 @@ export interface DrawMatch {
   teamAIndex: number;
   teamBIndex: number;
   sequence: number;
+}
+
+export interface ConfiguredPair {
+  number: number;
+  groupAPlayerId: string;
+  groupBPlayerId: string;
+}
+
+function buildMatches(teamCount: number): DrawMatch[] {
+  const matches: DrawMatch[] = [];
+  for (let teamAIndex = 0; teamAIndex < teamCount; teamAIndex += 1) {
+    for (let teamBIndex = teamAIndex + 1; teamBIndex < teamCount; teamBIndex += 1) {
+      matches.push({ teamAIndex, teamBIndex, sequence: matches.length + 1 });
+    }
+  }
+  return matches;
+}
+
+export function buildConfiguredDraw(participants: GroupedPlayer[], pairs: ConfiguredPair[]) {
+  if (pairs.length < 2 || pairs.length * 2 !== participants.length) {
+    throw new Error('Every attendee must be assigned to one of at least two pairs.');
+  }
+  if (new Set(pairs.map((pair) => pair.number)).size !== pairs.length
+    || pairs.some((pair) => !Number.isInteger(pair.number) || pair.number < 1)) {
+    throw new Error('Pair numbers must be unique positive integers.');
+  }
+
+  const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
+  const usedPlayerIds = new Set<string>();
+  const teams = [...pairs]
+    .sort((left, right) => left.number - right.number)
+    .map((pair) => {
+      const groupA = participantsById.get(pair.groupAPlayerId);
+      const groupB = participantsById.get(pair.groupBPlayerId);
+      if (groupA?.group !== 'A' || groupB?.group !== 'B') {
+        throw new Error('Each pair must contain one saved Group A and one saved Group B attendee.');
+      }
+      if (usedPlayerIds.has(groupA.id) || usedPlayerIds.has(groupB.id)) {
+        throw new Error('Each attendee can appear in only one pair.');
+      }
+      usedPlayerIds.add(groupA.id);
+      usedPlayerIds.add(groupB.id);
+      return { number: pair.number, members: [groupA, groupB] as [GroupedPlayer, GroupedPlayer] };
+    });
+
+  if (usedPlayerIds.size !== participants.length) {
+    throw new Error('Every attendee must be assigned to a pair.');
+  }
+  return { teams, matches: buildMatches(teams.length) };
 }
 
 export function buildDrawPersistenceRows(
@@ -36,7 +86,7 @@ export function buildDrawPersistenceRows(
       status: 'attendee' as const,
       group: participant.group,
     })),
-    teams: draw.teams.map((_, index) => ({ sessionId, seed: index + 1 })),
+    teams: draw.teams.map((team, index) => ({ sessionId, seed: team.number ?? index + 1 })),
     members: draw.teams.flatMap((team, teamIndex) => team.members.map((member) => ({
       teamIndex,
       sessionId,
@@ -93,19 +143,7 @@ export function buildRoundRobinDraw(
   const teams = shuffledA.map((playerA, index) => ({
     members: [playerA, shuffledB[index]] as [GroupedPlayer, GroupedPlayer],
   }));
-  const matches: DrawMatch[] = [];
-
-  for (let teamAIndex = 0; teamAIndex < teams.length; teamAIndex += 1) {
-    for (let teamBIndex = teamAIndex + 1; teamBIndex < teams.length; teamBIndex += 1) {
-      matches.push({
-        teamAIndex,
-        teamBIndex,
-        sequence: matches.length + 1,
-      });
-    }
-  }
-
-  return { teams, matches };
+  return { teams, matches: buildMatches(teams.length) };
 }
 
 export function validateCompletedScore(scoreA: number, scoreB: number) {
