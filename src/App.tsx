@@ -1,236 +1,201 @@
-import React, { useState } from 'react';
-import { Player, MatchPair, ScreenMode } from './types';
-import { INITIAL_PLAYERS, INITIAL_MATCHES } from './data';
-import LandingPage from './components/LandingPage';
-import AuthPage from './components/AuthPage';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import useSWR from 'swr';
 import AdminDashboard from './components/AdminDashboard';
+import AuthPage from './components/AuthPage';
+import LandingPage from './components/LandingPage';
 import MobileView from './components/MobileView';
+import { adminRequest, publicFetcher } from './lib/api';
+import { useActivity } from './lib/activity';
+import { getSupabaseBrowserClient } from './lib/supabase';
+import type { MatchPair, Player, ScreenMode } from './types';
+
+interface PublicState {
+  season: { id: string; name: string } | null;
+  leaderboard: Array<{ id: string; name: string; displayRating: string; points: number }>;
+  activeSession: null | {
+    id: string;
+    name: string;
+    teams: Array<{ id: string; members: Array<{ playerId: string; name: string }> }>;
+    matches: Array<{
+      id: string;
+      teamAId: string;
+      teamBId: string;
+      scoreA: number | null;
+      scoreB: number | null;
+      court: string | null;
+      status: 'pending' | 'in_progress' | 'completed';
+    }>;
+  };
+}
+
+interface Membership {
+  id: string;
+  email: string;
+  role: 'admin' | 'superadmin';
+  status: 'active' | 'disabled';
+}
+
+function ratingValue(rating: string) {
+  return Number(rating.match(/\d+(?:\.\d+)?/)?.[0] ?? 0);
+}
+
+function teamAsPlayer(team: { id: string; members: Array<{ name: string }> }): Player {
+  return {
+    id: team.id,
+    name: team.members.map((member) => member.name).join(' / '),
+    rating: 'Doubles team',
+    ratingValue: 0,
+    points: 0,
+    winRate: '-',
+    group: 'A',
+    winStreak: 0,
+  };
+}
 
 export default function App() {
-  const [screenMode, setScreenMode] = useState<ScreenMode>('landing');
+  const { begin, reportError, track } = useActivity();
+  const [screenMode, setScreenMode] = useState<ScreenMode>(
+    new URLSearchParams(window.location.search).has('setup') ? 'auth' : 'landing',
+  );
   const [lang, setLang] = useState<'en' | 'zh'>('en');
-  
-  // App-wide state
-  const [players, setPlayers] = useState<Player[]>(INITIAL_PLAYERS);
-  const [matches, setMatches] = useState<MatchPair[]>(INITIAL_MATCHES);
-  
-  // Simulated logged-in user state
-  const [user, setUser] = useState<{ email: string; role: 'admin' | 'player' } | null>(null);
+  const [membership, setMembership] = useState<Membership | null>(null);
+  const [authNotice, setAuthNotice] = useState('');
+  const { data, error: publicError, isLoading, isValidating, mutate: mutatePublic } = useSWR<PublicState>(
+    '/api/public/state',
+    publicFetcher,
+    { refreshInterval: 10_000, revalidateOnFocus: true },
+  );
 
-  const handleAuthSuccess = (role: 'admin' | 'player', email: string) => {
-    setUser({ email, role });
-    if (role === 'admin') {
+  useEffect(() => {
+    if (!isLoading && !isValidating) return;
+    return begin();
+  }, [begin, isLoading, isValidating]);
+
+  useEffect(() => {
+    if (publicError) reportError(publicError instanceof Error ? publicError.message : 'Live competition data is temporarily unavailable.');
+  }, [publicError, reportError]);
+
+  const players = useMemo<Player[]>(() => {
+    const leaderboard = data?.leaderboard ?? [];
+    const groupASize = Math.ceil(leaderboard.length / 2);
+    return leaderboard.map((player, index) => ({
+      id: player.id,
+      name: player.name,
+      rating: player.displayRating,
+      ratingValue: ratingValue(player.displayRating),
+      points: player.points,
+      winRate: '-',
+      initials: player.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(),
+      group: index < groupASize ? 'A' : 'B',
+      winStreak: 0,
+    }));
+  }, [data?.leaderboard]);
+
+  const matches = useMemo<MatchPair[]>(() => {
+    const activeSession = data?.activeSession;
+    if (!activeSession) return [];
+    const teamMap = new Map(activeSession.teams.map((team) => [team.id, team]));
+    return activeSession.matches.flatMap((match) => {
+      const teamA = teamMap.get(match.teamAId);
+      const teamB = teamMap.get(match.teamBId);
+      if (!teamA || !teamB) return [];
+      return [{
+        id: match.id,
+        playerA: teamAsPlayer(teamA),
+        playerB: teamAsPlayer(teamB),
+        scoreA: match.scoreA ?? undefined,
+        scoreB: match.scoreB ?? undefined,
+        court: match.court ?? undefined,
+        status: match.status === 'completed' ? 'Completed' : match.status === 'in_progress' ? 'In Progress' : 'Pending',
+      } satisfies MatchPair];
+    });
+  }, [data?.activeSession]);
+
+  const loadAdmin = useCallback(async () => {
+    await track(async () => {
+      const result = await adminRequest<{ membership: Membership }>('/api/admin/me');
+      setMembership(result.membership);
+      setAuthNotice('');
       setScreenMode('admin');
-    } else {
-      setScreenMode('player_mobile');
-    }
-  };
+    });
+  }, [track]);
 
-  const handleLogout = () => {
-    setUser(null);
-    setScreenMode('landing');
-  };
+  useEffect(() => {
+    const supabase = getSupabaseBrowserClient();
+    void supabase.auth.getSession().then(({ data: sessionData }) => {
+      if (sessionData.session && !new URLSearchParams(window.location.search).has('setup')) {
+        void loadAdmin().catch((caught) => reportError(caught instanceof Error ? caught.message : 'Administrator access could not be loaded.'));
+      }
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        setMembership(null);
+      }
+    });
+    const handleReauth = () => {
+      setMembership(null);
+      setAuthNotice('Your eight-hour administrator session ended. Sign in again to continue.');
+      setScreenMode('auth');
+    };
+    window.addEventListener('rallyfire:reauth', handleReauth);
+    return () => {
+      listener.subscription.unsubscribe();
+      window.removeEventListener('rallyfire:reauth', handleReauth);
+    };
+  }, [loadAdmin, reportError]);
+
+  async function handleLogout() {
+    try {
+      await track(async () => {
+        await getSupabaseBrowserClient().auth.signOut({ scope: 'local' });
+        setMembership(null);
+        setScreenMode('landing');
+      });
+    } catch (caught) {
+      reportError(caught instanceof Error ? caught.message : 'Logout failed.');
+    }
+  }
 
   return (
-    <div className="min-h-screen bg-[#0b1326] text-[#dae2fd] font-sans flex flex-col selection:bg-primary-container selection:text-on-primary-container">
-      
-      {/* Top Demo Navigation Switcher Header - Elegant & Helpful */}
-      <div className="bg-[#060e20] text-xs py-2 px-4 border-b border-outline-variant/15 flex flex-wrap justify-between items-center z-50 sticky top-0 gap-3">
-        <div className="flex items-center gap-1.5 text-on-surface-variant font-medium">
-          <span className="animate-pulse bg-[#c3f400] w-2 h-2 rounded-full inline-block"></span>
-          <span><strong>RallyFire Live Demo:</strong> Quick toggle between responsive screen modes:</span>
-        </div>
-        
-        <div className="flex flex-wrap items-center gap-2">
-          <button 
-            type="button" 
-            onClick={() => setScreenMode('landing')}
-            className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${screenMode === 'landing' ? 'bg-[#c3f400]/25 text-[#c3f400] border border-[#c3f400]/50' : 'text-on-surface-variant hover:text-white bg-surface-bright/20'}`}
-          >
-            🏠 Homepage
+    <div className="flex min-h-screen flex-col bg-[#0b1326] font-sans text-[#dae2fd] selection:bg-primary-container selection:text-on-primary-container">
+      <header className="sticky top-0 z-20 border-b border-surface-bright bg-[#171f33]/95 shadow-md backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 md:px-8">
+          <button type="button" onClick={() => setScreenMode('landing')} className="flex items-center gap-2 hover:opacity-85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-fixed">
+            <span className="material-symbols-outlined text-3xl font-black text-primary-container">sports_tennis</span>
+            <span className="font-display text-xl font-black italic tracking-tighter text-primary-container">RALLYFIRE</span>
           </button>
-          
-          <button 
-            type="button" 
-            onClick={() => setScreenMode('auth')}
-            className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${screenMode === 'auth' ? 'bg-[#c3f400]/25 text-[#c3f400] border border-[#c3f400]/50' : 'text-on-surface-variant hover:text-white bg-surface-bright/20'}`}
-          >
-            🔑 Auth Screen
-          </button>
-          
-          <button 
-            type="button" 
-            onClick={() => setScreenMode('admin')}
-            className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${screenMode === 'admin' ? 'bg-[#c3f400]/25 text-[#c3f400] border border-[#c3f400]/50' : 'text-on-surface-variant hover:text-white bg-surface-bright/20'}`}
-          >
-            🛡️ Admin Dashboard (Matrix, Split, Draw)
-          </button>
-
-          <button 
-            type="button" 
-            onClick={() => setScreenMode('player_mobile')}
-            className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${screenMode === 'player_mobile' ? 'bg-[#c3f400]/25 text-[#c3f400] border border-[#c3f400]/50' : 'text-on-surface-variant hover:text-white bg-surface-bright/20'}`}
-          >
-            📱 Mobile Player View (Sleek UI)
-          </button>
-        </div>
-      </div>
-
-      {/* Main Navigation Header */}
-      <header className="bg-[#171f33]/90 shadow-md border-b border-surface-bright z-10 sticky top-[37px]">
-        <div className="max-w-7xl mx-auto px-4 md:px-8 h-16 flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <button 
-              type="button" 
-              onClick={() => setScreenMode('landing')}
-              className="flex items-center gap-2 hover:opacity-85"
-            >
-              <span className="material-symbols-outlined text-primary-container text-3xl font-black">sports_tennis</span>
-              <span className="font-display text-xl font-black text-primary-container italic tracking-tighter">RALLYFIRE</span>
-            </button>
-          </div>
-
-          {/* Center Links (Desktop only) */}
-          <nav className="hidden md:flex gap-6 items-center">
-            <button 
-              type="button" 
-              onClick={() => {
-                setScreenMode('landing');
-                setTimeout(() => {
-                  const element = document.getElementById('leaderboards');
-                  if (element) element.scrollIntoView({ behavior: 'smooth' });
-                }, 100);
-              }}
-              className="text-[#c4c9ac] hover:text-[#c3f400] transition-colors text-xs font-semibold"
-            >
-              {lang === 'en' ? 'Leaderboards' : '排行榜'}
-            </button>
-            <button 
-              type="button" 
-              onClick={() => setScreenMode('player_mobile')}
-              className="text-[#c4c9ac] hover:text-[#c3f400] transition-colors text-xs font-semibold"
-            >
-              {lang === 'en' ? 'Matches' : '比赛对决'}
-            </button>
-            <button 
-              type="button" 
-              onClick={() => {
-                alert(lang === 'en' ? 'Welcome to RallyFire Clubs! Full feature catalog under review.' : '欢迎！俱乐部更多高级特征正在审核。');
-              }}
-              className="text-[#c4c9ac] hover:text-[#c3f400] transition-colors text-xs font-semibold"
-            >
-              {lang === 'en' ? 'Clubs' : '俱乐部'}
-            </button>
+          <nav className="hidden items-center gap-6 md:flex" aria-label="Primary navigation">
+            <button type="button" onClick={() => setScreenMode('landing')} className="text-xs font-semibold text-[#c4c9ac] hover:text-[#c3f400]">Leaderboard</button>
+            <button type="button" onClick={() => setScreenMode('player_mobile')} className="text-xs font-semibold text-[#c4c9ac] hover:text-[#c3f400]">Matches</button>
           </nav>
-
-          {/* Right Area: Language Switcher, Logged In User, or Log In Button */}
-          <div className="flex items-center gap-4">
-            {/* Global Language Toggle */}
-            <div className="flex items-center gap-1 bg-surface-container-high px-2 py-1 rounded border border-outline-variant/30 text-xs">
-              <button 
-                type="button" 
-                onClick={() => setLang('en')} 
-                className={`px-1.5 py-0.5 rounded transition-colors ${lang === 'en' ? 'bg-[#c3f400] text-black font-semibold' : 'text-on-surface-variant hover:text-white'}`}
-              >
-                EN
-              </button>
-              <button 
-                type="button" 
-                onClick={() => setLang('zh')} 
-                className={`px-1.5 py-0.5 rounded transition-colors ${lang === 'zh' ? 'bg-[#c3f400] text-black font-semibold' : 'text-on-surface-variant hover:text-white'}`}
-              >
-                中文
-              </button>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 rounded border border-outline-variant/30 bg-surface-container-high px-2 py-1 text-xs">
+              <button type="button" onClick={() => setLang('en')} className={lang === 'en' ? 'rounded bg-[#c3f400] px-1.5 py-0.5 font-semibold text-black' : 'px-1.5 text-on-surface-variant'}>EN</button>
+              <button type="button" onClick={() => setLang('zh')} className={lang === 'zh' ? 'rounded bg-[#c3f400] px-1.5 py-0.5 font-semibold text-black' : 'px-1.5 text-on-surface-variant'}>中文</button>
             </div>
-
-            {user ? (
-              <div className="flex items-center gap-3">
-                <span className="hidden sm:inline text-xs text-[#c4c9ac] font-medium max-w-[120px] truncate">
-                  Logged in as <strong className="text-white">{user.email.split('@')[0]}</strong> ({user.role})
-                </span>
-                
-                <button 
-                  type="button"
-                  onClick={handleLogout}
-                  className="bg-surface-bright/70 hover:bg-surface-bright text-xs text-white font-semibold py-1.5 px-3 rounded border border-outline-variant/25 transition-all text-center"
-                >
-                  Logout
-                </button>
-              </div>
+            {membership ? (
+              <><button type="button" onClick={() => setScreenMode('admin')} className="hidden text-xs font-semibold text-on-surface-variant hover:text-primary-fixed sm:block">Admin console</button><button type="button" onClick={handleLogout} className="rounded border border-outline-variant px-3 py-2 text-xs font-semibold text-white">Logout</button></>
             ) : (
-              <button 
-                type="button"
-                onClick={() => setScreenMode('auth')}
-                className="bg-[#c3f400] text-black text-xs font-extrabold px-5 py-2.5 rounded hover:bg-[#abd600] transition-all shadow-[0_0_8px_rgba(195,244,0,0.35)]"
-              >
-                {lang === 'en' ? 'Log In / Register' : '登录 / 注册'}
-              </button>
+              <button type="button" onClick={() => setScreenMode('auth')} className="rounded bg-[#c3f400] px-4 py-2 text-xs font-extrabold text-black hover:bg-[#abd600]">Admin login</button>
             )}
           </div>
         </div>
       </header>
 
-      {/* Main Container Workspace */}
-      <main className="flex-grow p-4 md:p-8 max-w-7xl mx-auto w-full">
-        {screenMode === 'landing' && (
-          <LandingPage 
-            players={players} 
-            onNavigate={setScreenMode} 
-            lang={lang} 
-            setLang={setLang}
-          />
-        )}
-
-        {screenMode === 'auth' && (
-          <AuthPage 
-            onSuccess={handleAuthSuccess} 
-            onNavigate={setScreenMode}
-          />
-        )}
-
-        {screenMode === 'admin' && (
-          <AdminDashboard 
-            players={players}
-            onPlayersChange={setPlayers}
-            matches={matches}
-            onMatchesChange={setMatches}
-            lang={lang}
-          />
-        )}
-
-        {screenMode === 'player_mobile' && (
-          <MobileView 
-            players={players} 
-            matches={matches} 
-            lang={lang} 
-            setLang={setLang}
-          />
-        )}
+      <main className="mx-auto w-full max-w-7xl flex-grow p-4 md:p-8">
+        {authNotice && screenMode === 'auth' && <div role="alert" className="mx-auto mb-4 max-w-4xl rounded-lg border border-amber-500/30 bg-amber-950/30 p-3 text-sm text-amber-100">{authNotice}</div>}
+        {screenMode === 'landing' && <LandingPage players={players} onNavigate={setScreenMode} lang={lang} setLang={setLang} seasonName={data?.season?.name} />}
+        {screenMode === 'auth' && <AuthPage onSuccess={async () => loadAdmin()} onNavigate={setScreenMode} />}
+        {screenMode === 'admin' && (membership ? <AdminDashboard membership={membership} onDataChanged={() => { void mutatePublic(); }} /> : <AuthPage onSuccess={async () => loadAdmin()} onNavigate={setScreenMode} />)}
+        {screenMode === 'player_mobile' && <MobileView players={players} matches={matches} lang={lang} setLang={setLang} />}
       </main>
 
-      {/* Footer Block */}
-      <footer className="bg-surface-container-lowest border-t border-outline-variant/20 mt-12 py-8">
-        <div className="max-w-7xl mx-auto px-4 md:px-8 flex flex-col md:flex-row justify-between items-center gap-6 text-center md:text-left">
-          <div className="flex flex-col gap-1.5">
-            <div className="flex justify-center md:justify-start items-center gap-1.5">
-              <span className="material-symbols-outlined text-primary-container text-2xl font-black">sports_tennis</span>
-              <span className="font-display text-lg font-black text-primary-container italic tracking-tighter">RALLYFIRE</span>
-            </div>
-            <p className="text-xs text-on-surface-variant">
-              &copy; {new Date().getFullYear()} RallyFire Tennis. All rights reserved. High-velocity competitive play.
-            </p>
-          </div>
-
-          <nav className="flex flex-wrap justify-center gap-4 text-xs font-semibold text-[#c4c9ac]">
-            <a href="#" className="hover:text-primary-fixed underline decoration-[#c3f400]/25 transition-all">About Us</a>
-            <a href="#" className="hover:text-primary-fixed underline decoration-[#c3f400]/25 transition-all">Contact</a>
-            <a href="#" className="hover:text-primary-fixed underline decoration-[#c3f400]/25 transition-all">Privacy Policy</a>
-            <a href="#" className="hover:text-primary-fixed underline decoration-[#c3f400]/25 transition-all">Terms of Service</a>
-            <a href="#" className="hover:text-primary-fixed underline decoration-[#c3f400]/25 transition-all">Tournament Rules</a>
-          </nav>
+      <footer className="mt-12 border-t border-outline-variant/20 bg-surface-container-lowest py-7">
+        <div className="mx-auto flex max-w-7xl flex-col justify-between gap-3 px-4 text-center text-xs text-on-surface-variant md:flex-row md:px-8 md:text-left">
+          <span className="font-display font-black italic tracking-tight text-primary-container">RALLYFIRE</span>
+          <span>&copy; {new Date().getFullYear()} RallyFire Tennis. Public scores refresh every ten seconds.</span>
         </div>
       </footer>
-
     </div>
   );
 }

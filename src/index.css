@@ -71,6 +71,22 @@
   transition: all 0.2s ease;
 }
 
+@keyframes processing-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(350%); }
+}
+
+.processing-bar {
+  animation: processing-slide 1.1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .processing-bar {
+    animation: none;
+    width: 100%;
+  }
+}
+
 /* Custom scrollbar hiding */
 .hide-scrollbar::-webkit-scrollbar {
   display: none;

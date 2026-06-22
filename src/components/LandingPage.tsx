@@ -6,12 +6,11 @@ interface LandingPageProps {
   onNavigate: (mode: ScreenMode) => void;
   lang: 'en' | 'zh';
   setLang: (lang: 'en' | 'zh') => void;
+  seasonName?: string;
 }
 
-export default function LandingPage({ players, onNavigate, lang, setLang }: LandingPageProps) {
+export default function LandingPage({ players, onNavigate, lang, setLang, seasonName }: LandingPageProps) {
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'high' | 'standard'>('all');
-  const [rsvpCount, setRsvpCount] = useState(12);
-  const [rsvped, setRsvped] = useState(false);
 
   // Filter play ranking list
   const filteredPlayers = players.filter(p => {
@@ -19,20 +18,6 @@ export default function LandingPage({ players, onNavigate, lang, setLang }: Land
     if (selectedCategory === 'standard') return p.ratingValue < 4.0;
     return true;
   }).sort((a, b) => b.points - a.points);
-
-  const handleRSVP = () => {
-    if (rsvped) {
-      setRsvpCount(prev => prev - 1);
-      setRsvped(false);
-    } else {
-      setRsvpCount(prev => prev + 1);
-      setRsvped(true);
-      alert(lang === 'en' 
-        ? 'Successfully RSVPed for Wednesday Doubles Night! We have saved your spot.' 
-        : '成功报名！周三双打之夜的名额已预置。'
-      );
-    }
-  };
 
   return (
     <div className="space-y-12">
@@ -53,7 +38,7 @@ export default function LandingPage({ players, onNavigate, lang, setLang }: Land
           <div className="inline-block px-4 py-1.5 rounded-full bg-primary-container/10 border border-primary-container/30 mb-6">
             <span className="text-primary-container font-display text-xs font-bold tracking-wider uppercase flex items-center gap-2">
               <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>local_fire_department</span>
-              <span>{lang === 'en' ? 'Summer Season 2024' : '2024 夏季赛季'}</span>
+              <span>{seasonName ?? (lang === 'en' ? 'Season setup in progress' : '赛季设置中')}</span>
             </span>
           </div>
 
@@ -244,19 +229,17 @@ export default function LandingPage({ players, onNavigate, lang, setLang }: Land
                 </li>
                 <li className="flex items-center text-xs text-on-surface">
                   <span className="material-symbols-outlined text-[#c3f400] text-sm mr-2" style={{ fontVariationSettings: "'FILL' 1" }}>group</span>
-                  <span>{rsvpCount} / 16 {lang === 'en' ? 'Players RSVPed' : '名球员已加入'}</span>
+                  <span>{players.length} {lang === 'en' ? 'players on the leaderboard' : '名球员进入排行榜'}</span>
                 </li>
               </ul>
             </div>
 
             <button 
-              onClick={handleRSVP}
-              className={`w-full py-2.5 rounded font-display text-xs font-bold transition-all ${rsvped ? 'bg-surface-bright text-white border border-outline-variant/65' : 'bg-transparent border border-[#c3f400] text-[#c3f400] hover:bg-[#c3f400] hover:text-on-primary'}`}
+              type="button"
+              onClick={() => onNavigate('player_mobile')}
+              className="w-full rounded border border-[#c3f400] bg-transparent py-2.5 font-display text-xs font-bold text-[#c3f400] transition-all hover:bg-[#c3f400] hover:text-on-primary"
             >
-              {lang === 'en' 
-                ? (rsvped ? 'Cancel RSVP' : 'Register Now') 
-                : (rsvped ? '取消报名' : '立即报名')
-              }
+              {lang === 'en' ? 'View Live Matches' : '查看实时比赛'}
             </button>
           </div>
         </section>
