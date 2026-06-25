@@ -10,6 +10,7 @@ import {
   buildRoundRobinDraw,
   calculateMatchAwards,
   planAttendanceRollback,
+  planQuarterFinalConfigReturn,
   knockoutStageLabel,
   rankQualifyingTeams,
   resolveQualifyingKnockoutTeams,
@@ -227,6 +228,33 @@ describe('attendance rollback', () => {
 
   it.each(['draft', 'finalized', 'voided'] as const)('rejects %s sessions', (status) => {
     expect(() => planAttendanceRollback(status, matchStatuses)).toThrow(/published or in progress/i);
+  });
+});
+
+describe('quarter-final configuration return', () => {
+  const matches = [
+    { id: 'qualifier-1', bracketRound: null },
+    { id: 'qualifier-2', bracketRound: null },
+    { id: 'qualifier-3', bracketRound: null },
+    { id: 'qualifier-4', bracketRound: null },
+    { id: 'qualifier-5', bracketRound: null },
+    { id: 'quarter-1', bracketRound: 1 },
+    { id: 'semi-1', bracketRound: 2 },
+    { id: 'final-1', bracketRound: 3 },
+    { id: 'playoff-1', bracketRound: null },
+  ];
+
+  it('keeps qualifiers and deletes generated knockout and playoff matches', () => {
+    expect(planQuarterFinalConfigReturn('qualifying_knockout', 'in_progress', matches)).toEqual({
+      keptQualifierMatchIds: ['qualifier-1', 'qualifier-2', 'qualifier-3', 'qualifier-4', 'qualifier-5'],
+      deletedMatchIds: ['quarter-1', 'semi-1', 'final-1', 'playoff-1'],
+    });
+  });
+
+  it('rejects sessions without a generated bracket or with the wrong format', () => {
+    expect(() => planQuarterFinalConfigReturn('round_robin', 'in_progress', matches)).toThrow(/qualifying knockout/i);
+    expect(() => planQuarterFinalConfigReturn('qualifying_knockout', 'draft', matches)).toThrow(/published or in progress/i);
+    expect(() => planQuarterFinalConfigReturn('qualifying_knockout', 'in_progress', matches.slice(0, 5))).toThrow(/generated bracket/i);
   });
 });
 

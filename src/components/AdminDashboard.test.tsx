@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildDeleteRosterPlayerRequest,
+  buildReturnToQuarterFinalConfigRequest,
   buildQualifyingStandings,
   buildManualPairPayload,
   countAttendeeGroups,
@@ -16,6 +17,8 @@ import {
   isValidQualifyingMatchSetup,
   isValidKnockoutSetup,
   shouldRemoveRosterPlayer,
+  shouldReturnToQuarterFinalConfig,
+  shouldShowQuarterFinalConfigReturn,
   splitQualifyingKnockoutMatches,
   sortPlayersByPoints,
 } from './AdminDashboard';
@@ -226,6 +229,32 @@ describe('season roster delete', () => {
     expect(buildDeleteRosterPlayerRequest('player-1')).toEqual({
       method: 'DELETE',
       body: JSON.stringify({ playerId: 'player-1' }),
+    });
+  });
+});
+
+describe('quarter-final configuration return', () => {
+  it('shows the return action only after a qualifying knockout bracket is generated', () => {
+    expect(shouldShowQuarterFinalConfigReturn('qualifying_knockout', [
+      { id: 'qualifier', sequence: 1, teamAId: 'a', teamBId: 'b', scoreA: 11, scoreB: 8, court: null, status: 'completed' as const, bracketRound: null, bracketPosition: null },
+      { id: 'quarter', sequence: 6, teamAId: 'c', teamBId: 'd', scoreA: null, scoreB: null, court: null, status: 'pending' as const, bracketRound: 1, bracketPosition: 0 },
+    ])).toBe(true);
+    expect(shouldShowQuarterFinalConfigReturn('qualifying_knockout', [
+      { id: 'qualifier', sequence: 1, teamAId: 'a', teamBId: 'b', scoreA: 11, scoreB: 8, court: null, status: 'completed' as const, bracketRound: null, bracketPosition: null },
+    ])).toBe(false);
+    expect(shouldShowQuarterFinalConfigReturn('round_robin', [
+      { id: 'match', sequence: 1, teamAId: 'a', teamBId: 'b', scoreA: null, scoreB: null, court: null, status: 'pending' as const, bracketRound: 1, bracketPosition: 0 },
+    ])).toBe(false);
+  });
+
+  it('confirms before returning and builds the request', () => {
+    const confirmReturn = vi.fn().mockReturnValue(false);
+
+    expect(shouldReturnToQuarterFinalConfig(confirmReturn)).toBe(false);
+    expect(confirmReturn).toHaveBeenCalledWith('Return to quarter-final configuration? Current knockout/playoff matches and scores will be deleted.');
+    expect(buildReturnToQuarterFinalConfigRequest('session-1')).toEqual({
+      method: 'POST',
+      body: JSON.stringify({ action: 'return_to_quarter_final_config', sessionId: 'session-1' }),
     });
   });
 });

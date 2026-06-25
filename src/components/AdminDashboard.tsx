@@ -81,15 +81,27 @@ function errorMessage(error: unknown) {
 }
 
 const rosterRemovalConfirmation = 'Remove this player from the active season roster? History will be kept.';
+const quarterFinalConfigReturnConfirmation = 'Return to quarter-final configuration? Current knockout/playoff matches and scores will be deleted.';
 
 export function shouldRemoveRosterPlayer(confirmRemoval: (message: string) => boolean = window.confirm): boolean {
   return confirmRemoval(rosterRemovalConfirmation);
+}
+
+export function shouldReturnToQuarterFinalConfig(confirmReturn: (message: string) => boolean = window.confirm): boolean {
+  return confirmReturn(quarterFinalConfigReturnConfirmation);
 }
 
 export function buildDeleteRosterPlayerRequest(playerId: string): RequestInit {
   return {
     method: 'DELETE',
     body: JSON.stringify({ playerId }),
+  };
+}
+
+export function buildReturnToQuarterFinalConfigRequest(sessionId: string): RequestInit {
+  return {
+    method: 'POST',
+    body: JSON.stringify({ action: 'return_to_quarter_final_config', sessionId }),
   };
 }
 
@@ -371,6 +383,10 @@ export function splitQualifyingKnockoutMatches(matches: AdminSession['matches'])
   };
 }
 
+export function shouldShowQuarterFinalConfigReturn(format: AdminSession['format'], matches: AdminSession['matches']) {
+  return format === 'qualifying_knockout' && matches.some((match) => match.bracketRound !== null);
+}
+
 export function getQualifyingConsolationTeams(standings: ReturnType<typeof buildQualifyingStandings>) {
   return standings.filter((standing) => !standing.qualified);
 }
@@ -449,6 +465,9 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     && qualifierMatches.every((match) => match.status === 'completed')
     && qualifyingAdvancers.length === 8;
   const qualifyingBracketPending = session?.format === 'qualifying_knockout' && qualifiersComplete && bracketMatches.length === 0;
+  const canReturnToQuarterFinalConfig = session
+    ? shouldShowQuarterFinalConfigReturn(session.format, session.matches)
+    : false;
 
   useEffect(() => {
     setManualPairs(createManualPairRows(
@@ -678,6 +697,14 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
         body: JSON.stringify({ action: 'return_to_attendance', sessionId: session.id }),
       }),
       'Session returned to attendance. Configure groups and pairs again.',
+    );
+  }
+
+  async function returnToQuarterFinalConfig() {
+    if (!session || !shouldReturnToQuarterFinalConfig()) return;
+    await runAction(
+      () => adminRequest('/api/admin/sessions', buildReturnToQuarterFinalConfigRequest(session.id)),
+      'Returned to quarter-final configuration. Current knockout/playoff matches were deleted.',
     );
   }
 
@@ -962,7 +989,12 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                       </div>
                     )}
                     {bracketMatches.length > 0 ? (
-                      <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                      <div className="space-y-3">
+                        {canReturnToQuarterFinalConfig && (
+                          <button type="button" disabled={busy} onClick={returnToQuarterFinalConfig} className="w-fit rounded-lg border border-red-300 px-4 py-2 text-xs font-black text-red-300 disabled:opacity-50">Return to quarter-final configuration</button>
+                        )}
+                        <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                      </div>
                     ) : qualifyingBracketPending ? (
                       <div className="space-y-3 rounded-xl border border-primary-fixed/30 bg-primary-fixed/10 p-3">
                         <div><h3 className="text-sm font-black text-white">Configure quarter-final path</h3><p className="mt-1 text-xs text-on-surface-variant">Place any eight available teams into the quarter-final slots. Eliminated teams can replace qualified teams that cannot play.</p></div>

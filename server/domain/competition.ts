@@ -38,6 +38,31 @@ export function planAttendanceRollback(
   };
 }
 
+export function planQuarterFinalConfigReturn(
+  format: string,
+  status: string,
+  matchRows: ReadonlyArray<{ id: string; bracketRound: number | null }>,
+) {
+  if (format !== 'qualifying_knockout') {
+    throw new Error('Only a qualifying knockout session can return to quarter-final configuration.');
+  }
+  if (!['draw_published', 'in_progress'].includes(status)) {
+    throw new Error('Only a published or in progress session can return to quarter-final configuration.');
+  }
+  const qualifierMatches = matchRows.filter((match) => match.bracketRound === null).slice(0, 5);
+  const qualifierMatchIds = new Set(qualifierMatches.map((match) => match.id));
+  const deletedMatchIds = matchRows
+    .filter((match) => !qualifierMatchIds.has(match.id))
+    .map((match) => match.id);
+  if (qualifierMatches.length !== 5 || !matchRows.some((match) => match.bracketRound !== null) || deletedMatchIds.length === 0) {
+    throw new Error('No generated bracket exists for this session.');
+  }
+  return {
+    keptQualifierMatchIds: [...qualifierMatchIds],
+    deletedMatchIds,
+  };
+}
+
 export function validateDraftFormatChange(status: string): void {
   if (status !== 'draft') throw new Error('Only a draft session can change competition format.');
 }

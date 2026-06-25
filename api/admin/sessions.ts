@@ -25,6 +25,7 @@ import {
   buildDrawPersistenceRows,
   calculateMatchAwards,
   planAttendanceRollback,
+  planQuarterFinalConfigReturn,
   rankQualifyingTeams,
   resolveQualifyingKnockoutTeams,
   validateCompletedScore,
@@ -88,6 +89,7 @@ const actionSchema = z.discriminatedUnion('action', [
   }),
   z.object({ action: z.literal('finalize'), sessionId: z.uuid() }),
   z.object({ action: z.literal('return_to_attendance'), sessionId: z.uuid() }),
+  z.object({ action: z.literal('return_to_quarter_final_config'), sessionId: z.uuid() }),
   z.object({
     action: z.literal('set_format'),
     sessionId: z.uuid(),
@@ -670,6 +672,60 @@ export default async function handler(request: VercelRequest, response: VercelRe
         return;
       }
       sendJson(response, 200, { sessionId: result.sessionId });
+      return;
+    }
+
+    if (input.action === 'return_to_quarter_final_config') {
+      const result = await database.transaction(
+        async (transaction) => {
+          const [session] = await transaction
+            .select()
+            .from(playSessions)
+            .where(eq(playSessions.id, input.sessionId))
+            .for('update')
+            .limit(1);
+          if (!session) return { error: 'quarter_final_config_unavailable' as const };
+          const matchRows = await transaction
+            .select({
+              id: matches.id,
+              bracketRound: matches.bracketRound,
+            })
+            .from(matches)
+            .where(eq(matches.sessionId, session.id))
+            .orderBy(matches.sequence);
+          let plan;
+          try {
+            plan = planQuarterFinalConfigReturn(session.format, session.status, matchRows);
+          } catch (error) {
+            return {
+              error: 'quarter_final_config_unavailable' as const,
+              message: error instanceof Error ? error.message : 'Return to quarter-final configuration is unavailable.',
+            };
+          }
+          await transaction.delete(matches).where(inArray(matches.id, plan.deletedMatchIds));
+          await transaction
+            .update(playSessions)
+            .set({ status: 'in_progress', updatedAt: new Date() })
+            .where(eq(playSessions.id, session.id));
+          await transaction.insert(auditLog).values({
+            actorMembershipId: admin.membership.id,
+            action: 'session.returned_to_quarter_final_config',
+            entityType: 'play_session',
+            entityId: session.id,
+            details: {
+              deletedMatchIds: plan.deletedMatchIds,
+              keptQualifierMatchIds: plan.keptQualifierMatchIds,
+            },
+          });
+          return { sessionId: session.id };
+        },
+        { isolationLevel: 'serializable' },
+      );
+      if ('error' in result) {
+        sendJson(response, 409, result);
+        return;
+      }
+      sendJson(response, 200, { session: await getSessionDetail(result.sessionId) });
       return;
     }
 
