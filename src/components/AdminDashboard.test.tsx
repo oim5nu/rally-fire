@@ -184,7 +184,18 @@ describe('qualifying knockout setup', () => {
     const selected = createDefaultQuarterFinalTeamIds(standings as ReturnType<typeof buildQualifyingStandings>);
 
     expect(selected).toEqual(['team-1', 'team-2', 'team-3', 'team-4', 'team-5', 'team-6', 'team-7', 'team-8']);
-    expect(getAvailableQuarterFinalTeamIds(standings as ReturnType<typeof buildQualifyingStandings>, selected, 0)).toEqual(['team-1', 'team-9', 'team-10']);
+    expect(getAvailableQuarterFinalTeamIds(standings as ReturnType<typeof buildQualifyingStandings>)).toEqual([
+      'team-1',
+      'team-2',
+      'team-3',
+      'team-4',
+      'team-5',
+      'team-6',
+      'team-7',
+      'team-8',
+      'team-9',
+      'team-10',
+    ]);
     expect(isValidQuarterFinalTeamSelection(standings as ReturnType<typeof buildQualifyingStandings>, ['team-1', 'team-2', 'team-3', 'team-4', 'team-5', 'team-6', 'team-9', 'team-10'])).toBe(true);
     expect(isValidQuarterFinalTeamSelection(standings as ReturnType<typeof buildQualifyingStandings>, ['team-1', 'team-1', 'team-3', 'team-4', 'team-5', 'team-6', 'team-9', 'team-10'])).toBe(false);
   });

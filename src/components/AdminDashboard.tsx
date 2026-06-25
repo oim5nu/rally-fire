@@ -300,14 +300,8 @@ export function isValidQuarterFinalTeamSelection(
 
 export function getAvailableQuarterFinalTeamIds(
   standings: ReturnType<typeof buildQualifyingStandings>,
-  selectedTeamIds: string[],
-  slotIndex: number,
 ) {
-  const currentTeamId = selectedTeamIds[slotIndex];
-  const usedByOtherSlots = new Set(selectedTeamIds.filter((_, index) => index !== slotIndex));
-  return standings
-    .map((standing) => standing.team.id)
-    .filter((teamId) => teamId === currentTeamId || !usedByOtherSlots.has(teamId));
+  return standings.map((standing) => standing.team.id);
 }
 
 export function getQuarterFinalPlayoffTeams(
@@ -976,7 +970,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                           {quarterFinalTeamIds.map((teamId, index) => (
                             <label key={index} className="text-[10px] font-bold uppercase text-on-surface-variant">Quarter-final slot {index + 1}
                               <select aria-label={`Qualifier quarter-final slot ${index + 1}`} value={teamId} onChange={(event) => setQuarterFinalTeamIds((current) => current.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry))} className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs font-normal normal-case text-white">
-                                {getAvailableQuarterFinalTeamIds(qualifyingStandings, quarterFinalTeamIds, index).map((candidateTeamId) => {
+                                {getAvailableQuarterFinalTeamIds(qualifyingStandings).map((candidateTeamId) => {
                                   const standing = qualifyingStandings.find((entry) => entry.team.id === candidateTeamId);
                                   return standing ? <option key={standing.team.id} value={standing.team.id}>#{standing.seed} {standing.team.members.map((member) => member.name).join(' / ')} · {standing.qualified ? 'Top 8' : 'Eliminated'}</option> : null;
                                 })}
