@@ -98,6 +98,28 @@ export function buildDeleteRosterPlayerRequest(playerId: string): RequestInit {
   };
 }
 
+export function buildBulkPointAdjustmentPayload(
+  rows: Array<{ playerId: string; points: string }>,
+  notes: string,
+  idempotencyKey: string,
+) {
+  const normalizedNotes = notes.trim();
+  if (!normalizedNotes) return null;
+
+  const adjustments = rows
+    .filter((row) => row.points.trim() !== '')
+    .map((row) => ({ playerId: row.playerId, points: Number(row.points) }))
+    .filter((row) => Number.isFinite(row.points) && row.points !== 0);
+
+  if (adjustments.length === 0) return null;
+
+  return {
+    adjustments,
+    notes: normalizedNotes,
+    idempotencyKey,
+  };
+}
+
 export function buildReturnToQuarterFinalConfigRequest(sessionId: string): RequestInit {
   return {
     method: 'POST',
@@ -598,22 +620,32 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     );
   }
 
-  async function adjustPoints(event: React.FormEvent<HTMLFormElement>) {
+  async function bulkAdjustPoints(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
+    const payload = buildBulkPointAdjustmentPayload(
+      sortedPlayers.map((player) => ({
+        playerId: player.id,
+        points: String(form.get(`points-${player.id}`) ?? ''),
+      })),
+      String(form.get('notes') ?? ''),
+      crypto.randomUUID(),
+    );
+    if (!payload) {
+      const message = 'Enter a reason and at least one non-zero adjustment.';
+      setError(message);
+      reportError(message);
+      return;
+    }
+
     const succeeded = await runAction(
       () =>
         adminRequest('/api/admin/points', {
           method: 'POST',
-          body: JSON.stringify({
-            playerId: form.get('playerId'),
-            points: Number(form.get('points')),
-            notes: form.get('notes'),
-            idempotencyKey: crypto.randomUUID(),
-          }),
+          body: JSON.stringify(payload),
         }),
-      'Point adjustment added to the ledger.',
+      'Bulk point adjustments added to the ledger.',
     );
     if (succeeded) formElement.reset();
   }
@@ -842,12 +874,24 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
               {!players.length && <p className="py-5 text-center text-sm text-on-surface-variant">No players yet.</p>}
             </div>
             {players.length > 0 && (
-              <form onSubmit={adjustPoints} className="grid gap-2 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3 sm:grid-cols-2">
-                <p className="text-xs font-black text-white sm:col-span-2">Append point adjustment</p>
-                <select name="playerId" required className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{players.map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}</select>
-                <input name="points" type="number" step="0.1" required placeholder="Points, e.g. -10.5" className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white" />
-                <input name="notes" required placeholder="Reason for adjustment" className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white sm:col-span-2" />
-                <button disabled={busy} className="rounded border border-primary-fixed px-3 py-2 text-xs font-black text-primary-fixed sm:col-span-2 disabled:opacity-50">Add ledger entry</button>
+              <form onSubmit={bulkAdjustPoints} className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
+                <div>
+                  <p className="text-xs font-black text-white">Bulk point adjustment</p>
+                  <p className="mt-1 text-[11px] text-on-surface-variant">Enter positive or negative deltas. Blank and zero rows are skipped.</p>
+                </div>
+                <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                  {sortedPlayers.map((player) => (
+                    <label key={player.id} className="grid grid-cols-[1fr_7rem] items-center gap-2 rounded-lg bg-surface-container/70 px-3 py-2 text-xs">
+                      <span className="min-w-0">
+                        <span className="block truncate font-bold text-white">{player.name}</span>
+                        <span className="text-on-surface-variant">{player.points} pts current</span>
+                      </span>
+                      <input name={`points-${player.id}`} type="number" step="0.1" placeholder="+/- pts" className="rounded border border-outline-variant bg-surface-dim px-2 py-2 text-right text-white" />
+                    </label>
+                  ))}
+                </div>
+                <input name="notes" required placeholder="Shared reason for these adjustments" className="w-full rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white" />
+                <button disabled={busy} className="w-full rounded border border-primary-fixed px-3 py-2 text-xs font-black text-primary-fixed disabled:opacity-50">Update point adjustments</button>
               </form>
             )}
           </section>

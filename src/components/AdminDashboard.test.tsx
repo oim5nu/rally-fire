@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildDeleteRosterPlayerRequest,
+  buildBulkPointAdjustmentPayload,
   buildReturnToQuarterFinalConfigRequest,
   buildQualifyingStandings,
   buildManualPairPayload,
@@ -230,6 +231,34 @@ describe('season roster delete', () => {
       method: 'DELETE',
       body: JSON.stringify({ playerId: 'player-1' }),
     });
+  });
+});
+
+describe('bulk point adjustments', () => {
+  it('builds a bulk adjustment payload from non-zero rows only', () => {
+    expect(buildBulkPointAdjustmentPayload(
+      [
+        { playerId: 'player-1', points: '2.5' },
+        { playerId: 'player-2', points: '' },
+        { playerId: 'player-3', points: '0' },
+        { playerId: 'player-4', points: '-1' },
+      ],
+      'Correction after review',
+      'bulk-key-1',
+    )).toEqual({
+      adjustments: [
+        { playerId: 'player-1', points: 2.5 },
+        { playerId: 'player-4', points: -1 },
+      ],
+      notes: 'Correction after review',
+      idempotencyKey: 'bulk-key-1',
+    });
+  });
+
+  it('requires a reason and at least one non-zero adjustment', () => {
+    expect(buildBulkPointAdjustmentPayload([{ playerId: 'player-1', points: '1' }], ' ', 'bulk-key-1')).toBeNull();
+    expect(buildBulkPointAdjustmentPayload([{ playerId: 'player-1', points: '' }], 'Correction', 'bulk-key-1')).toBeNull();
+    expect(buildBulkPointAdjustmentPayload([{ playerId: 'player-1', points: '0' }], 'Correction', 'bulk-key-1')).toBeNull();
   });
 });
 
