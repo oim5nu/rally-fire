@@ -6,8 +6,10 @@ import {
   countAttendeeGroups,
   createManualPairRows,
   createDefaultKnockoutSetup,
+  createDefaultQualifyingMatchSetup,
   createQualifyingKnockoutSetup,
   getQualifyingConsolationTeams,
+  isValidQualifyingMatchSetup,
   isValidKnockoutSetup,
   shouldRemoveRosterPlayer,
   splitQualifyingKnockoutMatches,
@@ -89,6 +91,15 @@ describe('knockout setup', () => {
 });
 
 describe('qualifying knockout setup', () => {
+  it('creates five configurable qualifying matchups for ten teams', () => {
+    expect(createDefaultQualifyingMatchSetup(10)).toEqual([[0, 1], [2, 3], [4, 5], [6, 7], [8, 9]]);
+  });
+
+  it('requires every qualifying team exactly once', () => {
+    expect(isValidQualifyingMatchSetup(10, [[4, 9], [0, 2], [1, 8], [3, 7], [5, 6]])).toBe(true);
+    expect(isValidQualifyingMatchSetup(10, [[0, 1], [2, 3], [4, 5], [6, 7], [8, 8]])).toBe(false);
+  });
+
   it('creates an eight-team main bracket setup for qualifiers', () => {
     const setup = createQualifyingKnockoutSetup();
 

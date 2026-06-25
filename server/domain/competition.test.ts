@@ -104,6 +104,21 @@ describe('qualifying knockout format', () => {
     expect(() => buildQualifyingKnockoutMatches(8)).toThrow(/exactly ten/i);
   });
 
+  it('creates manually configured qualifying matches', () => {
+    expect(buildQualifyingKnockoutMatches(10, {
+      qualifyingPairs: [[4, 9], [0, 2], [1, 8], [3, 7], [5, 6]],
+    })).toEqual([
+      { teamAIndex: 4, teamBIndex: 9, sequence: 1 },
+      { teamAIndex: 0, teamBIndex: 2, sequence: 2 },
+      { teamAIndex: 1, teamBIndex: 8, sequence: 3 },
+      { teamAIndex: 3, teamBIndex: 7, sequence: 4 },
+      { teamAIndex: 5, teamBIndex: 6, sequence: 5 },
+    ]);
+    expect(() => buildQualifyingKnockoutMatches(10, {
+      qualifyingPairs: [[0, 1], [2, 3], [4, 5], [6, 7], [8, 8]],
+    })).toThrow(/used exactly once/i);
+  });
+
   it('ranks qualifiers by win percentage, point differential, points scored, then seed', () => {
     const standings = rankQualifyingTeams([
       { teamId: 'seed-1', seed: 1, scoreFor: 11, scoreAgainst: 8 },

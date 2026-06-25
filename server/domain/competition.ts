@@ -57,6 +57,10 @@ export interface KnockoutConfig {
   mainSources: KnockoutSource[];
 }
 
+export interface QualifyingKnockoutConfig {
+  qualifyingPairs: Array<[number, number]>;
+}
+
 export interface KnockoutMatchPlan {
   key: string;
   round: number;
@@ -169,13 +173,22 @@ export function buildKnockoutDraw(teamCount: number, config: KnockoutConfig) {
   };
 }
 
-export function buildQualifyingKnockoutMatches(teamCount: number): DrawMatch[] {
+export function buildQualifyingKnockoutMatches(teamCount: number, config?: QualifyingKnockoutConfig): DrawMatch[] {
   if (teamCount !== 10) {
     throw new Error('Qualifying knockout requires exactly ten teams.');
   }
-  return Array.from({ length: 5 }, (_, index) => ({
-    teamAIndex: index * 2,
-    teamBIndex: index * 2 + 1,
+  const qualifyingPairs = config?.qualifyingPairs ?? Array.from({ length: 5 }, (_, index) => [index * 2, index * 2 + 1] as [number, number]);
+  if (qualifyingPairs.length !== 5) {
+    throw new Error('Qualifying knockout requires exactly five qualifying matches.');
+  }
+  const teamUses = qualifyingPairs.flat();
+  if (teamUses.some((teamIndex) => !Number.isInteger(teamIndex) || teamIndex < 0 || teamIndex >= teamCount)
+    || [...teamUses].sort((left, right) => left - right).join(',') !== Array.from({ length: teamCount }, (_, index) => index).join(',')) {
+    throw new Error('Every qualifying knockout team must be used exactly once.');
+  }
+  return qualifyingPairs.map(([teamAIndex, teamBIndex], index) => ({
+    teamAIndex,
+    teamBIndex,
     sequence: index + 1,
   }));
 }

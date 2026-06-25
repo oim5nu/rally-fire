@@ -32,6 +32,7 @@ import {
   validateQualifyingKnockoutFinalization,
   validateWinnerAdvancement,
   type KnockoutConfig,
+  type QualifyingKnockoutConfig,
 } from '../../server/domain/competition.js';
 
 const sessionFormats = ['round_robin', 'knockout', 'qualifying_knockout'] as const;
@@ -41,6 +42,9 @@ const knockoutConfigSchema = z.object({
     z.object({ kind: z.literal('team'), teamIndex: z.number().int().nonnegative() }),
     z.object({ kind: z.literal('preliminary'), matchIndex: z.number().int().nonnegative() }),
   ])),
+});
+const qualifyingKnockoutConfigSchema = z.object({
+  qualifyingPairs: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
 });
 
 const actionSchema = z.discriminatedUnion('action', [
@@ -67,6 +71,7 @@ const actionSchema = z.discriminatedUnion('action', [
       groupBPlayerId: z.uuid(),
     })).min(2),
     knockoutConfig: knockoutConfigSchema.optional(),
+    qualifyingConfig: qualifyingKnockoutConfigSchema.optional(),
   }),
   z.object({
     action: z.literal('start_knockout'),
@@ -353,7 +358,13 @@ export default async function handler(request: VercelRequest, response: VercelRe
           ? buildKnockoutDraw(draw.teams.length, input.knockoutConfig as KnockoutConfig)
           : null;
         if (session.format === 'qualifying_knockout') {
-          draw = { teams: draw.teams, matches: buildQualifyingKnockoutMatches(draw.teams.length) };
+          draw = {
+            teams: draw.teams,
+            matches: buildQualifyingKnockoutMatches(
+              draw.teams.length,
+              input.qualifyingConfig as QualifyingKnockoutConfig | undefined,
+            ),
+          };
         }
       } catch (error) {
         sendJson(response, 409, {

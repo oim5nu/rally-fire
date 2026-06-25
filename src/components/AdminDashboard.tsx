@@ -260,6 +260,17 @@ export function createQualifyingKnockoutSetup(): KnockoutSetup {
   };
 }
 
+export function createDefaultQualifyingMatchSetup(teamCount: number): Array<[number, number]> {
+  return Array.from({ length: Math.floor(teamCount / 2) }, (_, index) => [index * 2, index * 2 + 1]);
+}
+
+export function isValidQualifyingMatchSetup(teamCount: number, qualifyingPairs: Array<[number, number]>): boolean {
+  if (teamCount !== 10 || qualifyingPairs.length !== 5) return false;
+  const teamUses = qualifyingPairs.flat();
+  return teamUses.every((teamIndex) => Number.isInteger(teamIndex) && teamIndex >= 0 && teamIndex < teamCount)
+    && [...teamUses].sort((left, right) => left - right).join(',') === Array.from({ length: teamCount }, (_, index) => index).join(',');
+}
+
 export function isValidKnockoutSetup(teamCount: number, setup: KnockoutSetup): boolean {
   if (teamCount < 2) return false;
   const mainSize = 2 ** Math.floor(Math.log2(teamCount));
@@ -362,6 +373,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const [selectedPlayers, setSelectedPlayers] = useState<Set<string>>(new Set());
   const [groupOverrides, setGroupOverrides] = useState<Record<string, 'A' | 'B'>>({});
   const [manualPairs, setManualPairs] = useState<ManualPairRow[]>([]);
+  const [qualifyingMatchSetup, setQualifyingMatchSetup] = useState<Array<[number, number]>>([]);
   const [knockoutSetup, setKnockoutSetup] = useState<KnockoutSetup>({ preliminaryPairs: [], mainSources: [] });
   const [attendanceDirty, setAttendanceDirty] = useState(false);
   const [notice, setNotice] = useState('');
@@ -398,6 +410,8 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     : [];
   const qualifyingAdvancers = qualifyingStandings.filter((standing) => standing.qualified);
   const qualifyingConsolationTeams = getQualifyingConsolationTeams(qualifyingStandings);
+  const validQualifyingMatchSetup = session?.format !== 'qualifying_knockout'
+    || isValidQualifyingMatchSetup(manualPairs.length, qualifyingMatchSetup);
   const qualifiersComplete = session?.format === 'qualifying_knockout'
     && qualifierMatches.length === 5
     && qualifierMatches.every((match) => match.status === 'completed')
@@ -410,6 +424,10 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
       groupBPlayers.map((player) => player.id),
     ));
   }, [selectedPlayers, groupOverrides, players]);
+
+  useEffect(() => {
+    setQualifyingMatchSetup(createDefaultQualifyingMatchSetup(manualPairs.length));
+  }, [manualPairs.length]);
 
   useEffect(() => {
     if (session?.format === 'qualifying_knockout' && session.status !== 'draft') {
@@ -569,6 +587,12 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
       reportError(message);
       return;
     }
+    if (session.format === 'qualifying_knockout' && !isValidQualifyingMatchSetup(manualPairs.length, qualifyingMatchSetup)) {
+      const message = 'Use every numbered pair exactly once across the five qualifying matches.';
+      setError(message);
+      reportError(message);
+      return;
+    }
     await runAction(
       () => adminRequest('/api/admin/sessions', {
         method: 'POST',
@@ -577,6 +601,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
           sessionId: session.id,
           pairs,
           knockoutConfig: session.format === 'knockout' ? knockoutSetup : undefined,
+          qualifyingConfig: session.format === 'qualifying_knockout' ? { qualifyingPairs: qualifyingMatchSetup } : undefined,
         }),
       }),
       'Match schedule published.',
@@ -835,8 +860,20 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                         {!isValidKnockoutSetup(manualPairs.length, knockoutSetup) && <p className="text-xs text-red-300">Use every pair and preliminary winner exactly once.</p>}
                       </div>
                     )}
+                    {session.format === 'qualifying_knockout' && (
+                      <div className="space-y-3 border-t border-outline-variant/20 pt-3">
+                        <div><h4 className="text-xs font-black uppercase tracking-wider text-primary-fixed">Manual qualifying matches</h4><p className="mt-1 text-[11px] text-on-surface-variant">Choose the five qualifying matchups. After scores are complete, configure the quarter-final path; semi-finals are filled by quarter-final winners.</p></div>
+                        {qualifyingMatchSetup.map((qualifyingPair, index) => (
+                          <div key={`qualifying-${index}`} className="grid grid-cols-[6rem_1fr_1fr] items-center gap-2">
+                            <span className="text-[10px] font-bold uppercase text-on-surface-variant">Qual {index + 1}</span>
+                            {([0, 1] as const).map((slot) => <select key={slot} aria-label={`Qualifying match ${index + 1} slot ${slot === 0 ? 'A' : 'B'}`} value={qualifyingPair[slot]} onChange={(event) => setQualifyingMatchSetup((current) => current.map((row, rowIndex) => rowIndex === index ? row.map((value, valueIndex) => valueIndex === slot ? Number(event.target.value) : value) as [number, number] : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{seededPairs.map((pair, pairIndex) => <option key={pairIndex} value={pairIndex}>Pair #{pair.number}</option>)}</select>)}
+                          </div>
+                        ))}
+                        {!validQualifyingMatchSetup && <p className="text-xs text-red-300">Use every numbered pair exactly once across the five qualifying matches.</p>}
+                      </div>
+                    )}
                     {session.format === 'qualifying_knockout' && manualPairs.length !== 10 && <p className="text-xs text-red-300">Qualifying knockout requires exactly 10 pairs.</p>}
-                    <button type="button" disabled={busy || !buildManualPairPayload(manualPairs, groupAPlayers.map((player) => player.id), groupBPlayers.map((player) => player.id)) || (session.format === 'knockout' && !isValidKnockoutSetup(manualPairs.length, knockoutSetup)) || (session.format === 'qualifying_knockout' && manualPairs.length !== 10)} onClick={generateSchedule} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate {session.format === 'knockout' ? 'knockout bracket' : session.format === 'qualifying_knockout' ? 'qualifying matches' : 'match schedule'}</button>
+                    <button type="button" disabled={busy || !buildManualPairPayload(manualPairs, groupAPlayers.map((player) => player.id), groupBPlayers.map((player) => player.id)) || (session.format === 'knockout' && !isValidKnockoutSetup(manualPairs.length, knockoutSetup)) || (session.format === 'qualifying_knockout' && (manualPairs.length !== 10 || !validQualifyingMatchSetup))} onClick={generateSchedule} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate {session.format === 'knockout' ? 'knockout bracket' : session.format === 'qualifying_knockout' ? 'qualifying matches' : 'match schedule'}</button>
                   </div>
                 )}
               </>
@@ -883,18 +920,18 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                       <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
                     ) : qualifyingBracketPending ? (
                       <div className="space-y-3 rounded-xl border border-primary-fixed/30 bg-primary-fixed/10 p-3">
-                        <div><h3 className="text-sm font-black text-white">Configure top-eight knockout bracket</h3><p className="mt-1 text-xs text-on-surface-variant">Place each qualified team into the main bracket slots manually before starting the knockout stage.</p></div>
+                        <div><h3 className="text-sm font-black text-white">Configure quarter-final path</h3><p className="mt-1 text-xs text-on-surface-variant">Place each qualified team into the quarter-final slots manually. Semi-finals and the final are filled by winners.</p></div>
                         <div className="grid gap-2 sm:grid-cols-2">
                           {knockoutSetup.mainSources.map((source, index) => (
-                            <label key={index} className="text-[10px] font-bold uppercase text-on-surface-variant">Main slot {index + 1}
-                              <select aria-label={`Qualifier knockout slot ${index + 1}`} value={source.kind === 'team' ? `team:${source.teamIndex}` : ''} onChange={(event) => { const [, rawIndex] = event.target.value.split(':'); setKnockoutSetup((current) => ({ ...current, mainSources: current.mainSources.map((entry, entryIndex) => entryIndex === index ? { kind: 'team', teamIndex: Number(rawIndex) } : entry) })); }} className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs font-normal normal-case text-white">
+                            <label key={index} className="text-[10px] font-bold uppercase text-on-surface-variant">Quarter-final slot {index + 1}
+                              <select aria-label={`Qualifier quarter-final slot ${index + 1}`} value={source.kind === 'team' ? `team:${source.teamIndex}` : ''} onChange={(event) => { const [, rawIndex] = event.target.value.split(':'); setKnockoutSetup((current) => ({ ...current, mainSources: current.mainSources.map((entry, entryIndex) => entryIndex === index ? { kind: 'team', teamIndex: Number(rawIndex) } : entry) })); }} className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs font-normal normal-case text-white">
                                 {qualifyingAdvancers.map((standing, advancerIndex) => <option key={standing.team.id} value={`team:${advancerIndex}`}>#{standing.seed} {standing.team.members.map((member) => member.name).join(' / ')}</option>)}
                               </select>
                             </label>
                           ))}
                         </div>
                         {!isValidKnockoutSetup(8, knockoutSetup) && <p className="text-xs text-red-300">Use every qualified team exactly once.</p>}
-                        <button type="button" disabled={busy || !isValidKnockoutSetup(8, knockoutSetup)} onClick={startQualifyingKnockout} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Start knockout bracket</button>
+                        <button type="button" disabled={busy || !isValidKnockoutSetup(8, knockoutSetup)} onClick={startQualifyingKnockout} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Start quarter-final bracket</button>
                       </div>
                     ) : (
                       <p className="rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3 text-xs text-amber-200">Complete all qualifying matches to unlock the top-eight knockout bracket.</p>
