@@ -20,13 +20,13 @@ import {
 } from '../../server/db/schema.js';
 import {
   buildConfiguredDraw,
-  buildQualifyingConsolationMatch,
   buildQualifyingKnockoutMatches,
   buildKnockoutDraw,
   buildDrawPersistenceRows,
   calculateMatchAwards,
   planAttendanceRollback,
   rankQualifyingTeams,
+  resolveQualifyingKnockoutTeams,
   validateCompletedScore,
   validateDraftFormatChange,
   validateQualifyingKnockoutFinalization,
@@ -77,6 +77,7 @@ const actionSchema = z.discriminatedUnion('action', [
     action: z.literal('start_knockout'),
     sessionId: z.uuid(),
     knockoutConfig: knockoutConfigSchema,
+    quarterFinalTeamIds: z.array(z.uuid()).length(8).optional(),
   }),
   z.object({
     action: z.literal('score'),
@@ -480,8 +481,8 @@ export default async function handler(request: VercelRequest, response: VercelRe
       }
       const seedByTeamId = new Map(teamRows.map((team) => [team.id, team.seed]));
       let knockout;
-      let advancingTeamIds: string[];
-      let consolationMatch: ReturnType<typeof buildQualifyingConsolationMatch>;
+      let quarterFinalTeamIds: string[];
+      let consolationMatch: { teamAId: string; teamBId: string; sequence: number };
       try {
         const standings = rankQualifyingTeams(qualifierMatches.flatMap((match) => [
           {
@@ -497,9 +498,14 @@ export default async function handler(request: VercelRequest, response: VercelRe
             scoreAgainst: match.scoreA!,
           },
         ]));
-        advancingTeamIds = standings.filter((standing) => standing.qualified).map((standing) => standing.teamId);
+        const teamSelection = resolveQualifyingKnockoutTeams(standings, input.quarterFinalTeamIds);
+        quarterFinalTeamIds = teamSelection.quarterFinalTeamIds;
         knockout = buildKnockoutDraw(8, input.knockoutConfig as KnockoutConfig);
-        consolationMatch = buildQualifyingConsolationMatch(standings, matchRows.length + knockout.matches.length + 1);
+        consolationMatch = {
+          teamAId: teamSelection.consolationTeamIds[0],
+          teamBId: teamSelection.consolationTeamIds[1],
+          sequence: matchRows.length + knockout.matches.length + 1,
+        };
       } catch (error) {
         sendJson(response, 409, {
           error: 'invalid_knockout_start',
@@ -514,8 +520,8 @@ export default async function handler(request: VercelRequest, response: VercelRe
           id: matchIds.get(match.key)!,
           sessionId: session.id,
           sequence: sequenceOffset + index + 1,
-          teamAId: match.teamAIndex === null ? null : advancingTeamIds[match.teamAIndex],
-          teamBId: match.teamBIndex === null ? null : advancingTeamIds[match.teamBIndex],
+          teamAId: match.teamAIndex === null ? null : quarterFinalTeamIds[match.teamAIndex],
+          teamBId: match.teamBIndex === null ? null : quarterFinalTeamIds[match.teamBIndex],
           bracketRound: match.round,
           bracketPosition: match.position,
           nextMatchId: match.nextKey ? matchIds.get(match.nextKey)! : null,
@@ -537,7 +543,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           entityType: 'play_session',
           entityId: session.id,
           details: {
-            advancingTeamIds,
+            advancingTeamIds: quarterFinalTeamIds,
             consolationTeamIds: [consolationMatch.teamAId, consolationMatch.teamBId],
             matchCount: knockout.matches.length + 1,
           },

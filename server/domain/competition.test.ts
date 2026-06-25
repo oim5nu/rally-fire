@@ -12,6 +12,7 @@ import {
   planAttendanceRollback,
   knockoutStageLabel,
   rankQualifyingTeams,
+  resolveQualifyingKnockoutTeams,
   validateQualifyingKnockoutFinalization,
   validateWinnerAdvancement,
   validateCompletedScore,
@@ -180,6 +181,40 @@ describe('qualifying knockout format', () => {
       teamBId: 'seed-8',
       sequence: 12,
     });
+  });
+
+  it('resolves replacement quarter-final teams and playoff teams', () => {
+    const standings = Array.from({ length: 10 }, (_, index) => ({
+      teamId: `seed-${index + 1}`,
+      seed: index + 1,
+      scoreFor: 11,
+      scoreAgainst: index + 1,
+      wins: 1,
+      losses: 0,
+      winPercentage: 1,
+      pointDifferential: 10 - index,
+      qualified: index < 8,
+    }));
+
+    expect(resolveQualifyingKnockoutTeams(standings, [
+      'seed-1',
+      'seed-2',
+      'seed-3',
+      'seed-4',
+      'seed-5',
+      'seed-6',
+      'seed-9',
+      'seed-10',
+    ])).toEqual({
+      quarterFinalTeamIds: ['seed-1', 'seed-2', 'seed-3', 'seed-4', 'seed-5', 'seed-6', 'seed-9', 'seed-10'],
+      consolationTeamIds: ['seed-7', 'seed-8'],
+    });
+    expect(resolveQualifyingKnockoutTeams(standings)).toEqual({
+      quarterFinalTeamIds: ['seed-1', 'seed-2', 'seed-3', 'seed-4', 'seed-5', 'seed-6', 'seed-7', 'seed-8'],
+      consolationTeamIds: ['seed-9', 'seed-10'],
+    });
+    expect(() => resolveQualifyingKnockoutTeams(standings, ['seed-1', 'seed-1'])).toThrow(/eight unique/i);
+    expect(() => resolveQualifyingKnockoutTeams(standings, ['seed-1', 'seed-2', 'seed-3', 'seed-4', 'seed-5', 'seed-6', 'seed-7', 'missing'])).toThrow(/unknown/i);
   });
 });
 

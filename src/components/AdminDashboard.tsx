@@ -283,6 +283,40 @@ export function isValidKnockoutSetup(teamCount: number, setup: KnockoutSetup): b
     && [...preliminaries].sort((a, b) => a - b).join(',') === Array.from({ length: preliminaryCount }, (_, index) => index).join(',');
 }
 
+export function createDefaultQuarterFinalTeamIds(standings: ReturnType<typeof buildQualifyingStandings>) {
+  return standings.filter((standing) => standing.qualified).map((standing) => standing.team.id);
+}
+
+export function isValidQuarterFinalTeamSelection(
+  standings: ReturnType<typeof buildQualifyingStandings>,
+  selectedTeamIds: string[],
+) {
+  const allTeamIds = standings.map((standing) => standing.team.id);
+  return standings.length === 10
+    && selectedTeamIds.length === 8
+    && new Set(selectedTeamIds).size === 8
+    && selectedTeamIds.every((teamId) => allTeamIds.includes(teamId));
+}
+
+export function getAvailableQuarterFinalTeamIds(
+  standings: ReturnType<typeof buildQualifyingStandings>,
+  selectedTeamIds: string[],
+  slotIndex: number,
+) {
+  const currentTeamId = selectedTeamIds[slotIndex];
+  const usedByOtherSlots = new Set(selectedTeamIds.filter((_, index) => index !== slotIndex));
+  return standings
+    .map((standing) => standing.team.id)
+    .filter((teamId) => teamId === currentTeamId || !usedByOtherSlots.has(teamId));
+}
+
+export function getQuarterFinalPlayoffTeams(
+  standings: ReturnType<typeof buildQualifyingStandings>,
+  selectedTeamIds: string[],
+) {
+  return standings.filter((standing) => !selectedTeamIds.includes(standing.team.id));
+}
+
 export function buildQualifyingStandings(
   teams: AdminSession['teams'],
   matches: AdminSession['matches'],
@@ -374,6 +408,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const [groupOverrides, setGroupOverrides] = useState<Record<string, 'A' | 'B'>>({});
   const [manualPairs, setManualPairs] = useState<ManualPairRow[]>([]);
   const [qualifyingMatchSetup, setQualifyingMatchSetup] = useState<Array<[number, number]>>([]);
+  const [quarterFinalTeamIds, setQuarterFinalTeamIds] = useState<string[]>([]);
   const [knockoutSetup, setKnockoutSetup] = useState<KnockoutSetup>({ preliminaryPairs: [], mainSources: [] });
   const [attendanceDirty, setAttendanceDirty] = useState(false);
   const [notice, setNotice] = useState('');
@@ -409,7 +444,10 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     ? buildQualifyingStandings(session.teams, qualifierMatches)
     : [];
   const qualifyingAdvancers = qualifyingStandings.filter((standing) => standing.qualified);
-  const qualifyingConsolationTeams = getQualifyingConsolationTeams(qualifyingStandings);
+  const validQuarterFinalSelection = isValidQuarterFinalTeamSelection(qualifyingStandings, quarterFinalTeamIds);
+  const qualifyingConsolationTeams = validQuarterFinalSelection
+    ? getQuarterFinalPlayoffTeams(qualifyingStandings, quarterFinalTeamIds)
+    : getQualifyingConsolationTeams(qualifyingStandings);
   const validQualifyingMatchSetup = session?.format !== 'qualifying_knockout'
     || isValidQualifyingMatchSetup(manualPairs.length, qualifyingMatchSetup);
   const qualifiersComplete = session?.format === 'qualifying_knockout'
@@ -436,6 +474,18 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     }
     setKnockoutSetup(createDefaultKnockoutSetup(manualPairs.length));
   }, [manualPairs.length, session?.format, session?.status]);
+
+  useEffect(() => {
+    if (session?.format !== 'qualifying_knockout' || qualifyingStandings.length !== 10) {
+      setQuarterFinalTeamIds([]);
+      return;
+    }
+    setQuarterFinalTeamIds((current) => (
+      isValidQuarterFinalTeamSelection(qualifyingStandings, current)
+        ? current
+        : createDefaultQuarterFinalTeamIds(qualifyingStandings)
+    ));
+  }, [session?.format, qualifyingStandings.map((standing) => standing.team.id).join('|')]);
 
   useEffect(() => {
     if (playerError) reportError(errorMessage(playerError));
@@ -617,6 +667,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
           action: 'start_knockout',
           sessionId: session.id,
           knockoutConfig: knockoutSetup,
+          quarterFinalTeamIds,
         }),
       }),
       'Knockout bracket started with the top eight qualifiers.',
@@ -920,18 +971,21 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                       <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
                     ) : qualifyingBracketPending ? (
                       <div className="space-y-3 rounded-xl border border-primary-fixed/30 bg-primary-fixed/10 p-3">
-                        <div><h3 className="text-sm font-black text-white">Configure quarter-final path</h3><p className="mt-1 text-xs text-on-surface-variant">Place each qualified team into the quarter-final slots manually. Semi-finals and the final are filled by winners.</p></div>
+                        <div><h3 className="text-sm font-black text-white">Configure quarter-final path</h3><p className="mt-1 text-xs text-on-surface-variant">Place any eight available teams into the quarter-final slots. Eliminated teams can replace qualified teams that cannot play.</p></div>
                         <div className="grid gap-2 sm:grid-cols-2">
-                          {knockoutSetup.mainSources.map((source, index) => (
+                          {quarterFinalTeamIds.map((teamId, index) => (
                             <label key={index} className="text-[10px] font-bold uppercase text-on-surface-variant">Quarter-final slot {index + 1}
-                              <select aria-label={`Qualifier quarter-final slot ${index + 1}`} value={source.kind === 'team' ? `team:${source.teamIndex}` : ''} onChange={(event) => { const [, rawIndex] = event.target.value.split(':'); setKnockoutSetup((current) => ({ ...current, mainSources: current.mainSources.map((entry, entryIndex) => entryIndex === index ? { kind: 'team', teamIndex: Number(rawIndex) } : entry) })); }} className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs font-normal normal-case text-white">
-                                {qualifyingAdvancers.map((standing, advancerIndex) => <option key={standing.team.id} value={`team:${advancerIndex}`}>#{standing.seed} {standing.team.members.map((member) => member.name).join(' / ')}</option>)}
+                              <select aria-label={`Qualifier quarter-final slot ${index + 1}`} value={teamId} onChange={(event) => setQuarterFinalTeamIds((current) => current.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry))} className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs font-normal normal-case text-white">
+                                {getAvailableQuarterFinalTeamIds(qualifyingStandings, quarterFinalTeamIds, index).map((candidateTeamId) => {
+                                  const standing = qualifyingStandings.find((entry) => entry.team.id === candidateTeamId);
+                                  return standing ? <option key={standing.team.id} value={standing.team.id}>#{standing.seed} {standing.team.members.map((member) => member.name).join(' / ')} · {standing.qualified ? 'Top 8' : 'Eliminated'}</option> : null;
+                                })}
                               </select>
                             </label>
                           ))}
                         </div>
-                        {!isValidKnockoutSetup(8, knockoutSetup) && <p className="text-xs text-red-300">Use every qualified team exactly once.</p>}
-                        <button type="button" disabled={busy || !isValidKnockoutSetup(8, knockoutSetup)} onClick={startQualifyingKnockout} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Start quarter-final bracket</button>
+                        {!validQuarterFinalSelection && <p className="text-xs text-red-300">Choose eight unique teams for the quarter-final slots.</p>}
+                        <button type="button" disabled={busy || !isValidKnockoutSetup(8, knockoutSetup) || !validQuarterFinalSelection} onClick={startQualifyingKnockout} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Start quarter-final bracket</button>
                       </div>
                     ) : (
                       <p className="rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3 text-xs text-amber-200">Complete all qualifying matches to unlock the top-eight knockout bracket.</p>

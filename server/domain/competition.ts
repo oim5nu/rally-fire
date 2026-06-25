@@ -252,6 +252,30 @@ export function buildQualifyingConsolationMatch(
   };
 }
 
+export function resolveQualifyingKnockoutTeams(
+  standings: ReadonlyArray<Pick<QualifyingTeamStanding, 'teamId' | 'qualified'>>,
+  quarterFinalTeamIds?: readonly string[],
+) {
+  if (standings.length !== 10) {
+    throw new Error('Qualifying knockout team selection requires exactly ten teams.');
+  }
+  const standingTeamIds = standings.map((standing) => standing.teamId);
+  const selectedTeamIds = quarterFinalTeamIds
+    ? [...quarterFinalTeamIds]
+    : standings.filter((standing) => standing.qualified).map((standing) => standing.teamId);
+  if (selectedTeamIds.length !== 8 || new Set(selectedTeamIds).size !== 8) {
+    throw new Error('Quarter-final selection requires eight unique teams.');
+  }
+  const unknownTeamId = selectedTeamIds.find((teamId) => !standingTeamIds.includes(teamId));
+  if (unknownTeamId) {
+    throw new Error(`Quarter-final selection includes unknown team ${unknownTeamId}.`);
+  }
+  return {
+    quarterFinalTeamIds: selectedTeamIds,
+    consolationTeamIds: standingTeamIds.filter((teamId) => !selectedTeamIds.includes(teamId)),
+  };
+}
+
 export function validateQualifyingKnockoutFinalization(
   format: string,
   matchRows: ReadonlyArray<{ bracketRound: number | null; status: string }>,
