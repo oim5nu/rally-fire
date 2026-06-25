@@ -81,10 +81,15 @@ function errorMessage(error: unknown) {
 }
 
 const rosterRemovalConfirmation = 'Remove this player from the active season roster? History will be kept.';
+const seasonArchiveConfirmation = 'Finalize and archive this season? Active draft or live sessions must be finished first.';
 const quarterFinalConfigReturnConfirmation = 'Return to quarter-final configuration? Current knockout/playoff matches and scores will be deleted.';
 
 export function shouldRemoveRosterPlayer(confirmRemoval: (message: string) => boolean = window.confirm): boolean {
   return confirmRemoval(rosterRemovalConfirmation);
+}
+
+export function shouldArchiveSeason(confirmArchive: (message: string) => boolean = window.confirm): boolean {
+  return confirmArchive(seasonArchiveConfirmation);
 }
 
 export function shouldReturnToQuarterFinalConfig(confirmReturn: (message: string) => boolean = window.confirm): boolean {
@@ -95,6 +100,17 @@ export function buildDeleteRosterPlayerRequest(playerId: string): RequestInit {
   return {
     method: 'DELETE',
     body: JSON.stringify({ playerId }),
+  };
+}
+
+export function buildArchiveSeasonRequest(seasonId: string, endsAt: string): RequestInit {
+  return {
+    method: 'PATCH',
+    body: JSON.stringify({
+      seasonId,
+      status: 'archived',
+      endsAt,
+    }),
   };
 }
 
@@ -797,6 +813,14 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     );
   }
 
+  async function archiveSeason() {
+    if (!activeSeason || !shouldArchiveSeason()) return;
+    await runAction(
+      () => adminRequest('/api/admin/seasons', buildArchiveSeasonRequest(activeSeason.id, new Date().toISOString())),
+      'Season finalized and archived.',
+    );
+  }
+
   async function downloadExport() {
     try {
       const payload = await track(() => adminRequest<Record<string, unknown>>('/api/admin/export'));
@@ -856,11 +880,14 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
           <section className="space-y-4 rounded-2xl border border-outline-variant/20 bg-surface-container p-5">
             <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">{activeSeason.name}</p><h2 className="mt-1 text-xl font-black text-white">Season roster</h2></div>
             {membership.role === 'superadmin' && (
-              <form onSubmit={updateSeason} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
-                <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Win points<input name="winPoints" type="number" min="0" step="0.1" defaultValue={activeSeason.winPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
-                <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Loss points<input name="lossPoints" type="number" min="0" step="0.1" defaultValue={activeSeason.lossPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
-                <button disabled={busy} className="rounded border border-primary-fixed px-3 py-2 text-xs font-black text-primary-fixed disabled:opacity-50">Save</button>
-              </form>
+              <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
+                <form onSubmit={updateSeason} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
+                  <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Win points<input name="winPoints" type="number" min="0" step="0.1" defaultValue={activeSeason.winPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
+                  <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Loss points<input name="lossPoints" type="number" min="0" step="0.1" defaultValue={activeSeason.lossPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
+                  <button disabled={busy} className="rounded border border-primary-fixed px-3 py-2 text-xs font-black text-primary-fixed disabled:opacity-50">Save</button>
+                </form>
+                <button type="button" disabled={busy} onClick={() => void archiveSeason()} className="w-full rounded border border-red-300/70 px-3 py-2 text-xs font-black text-red-200 disabled:opacity-50">Finalize / Archive season</button>
+              </div>
             )}
             <form onSubmit={addPlayer} className="grid gap-3 sm:grid-cols-2">
               <input name="name" required placeholder="Player name" className="rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" />

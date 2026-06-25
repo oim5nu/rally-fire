@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildDeleteRosterPlayerRequest,
+  buildArchiveSeasonRequest,
   buildBulkPointAdjustmentPayload,
   buildReturnToQuarterFinalConfigRequest,
   buildQualifyingStandings,
@@ -18,6 +19,7 @@ import {
   isValidQualifyingMatchSetup,
   isValidKnockoutSetup,
   shouldRemoveRosterPlayer,
+  shouldArchiveSeason,
   shouldReturnToQuarterFinalConfig,
   shouldShowQuarterFinalConfigReturn,
   splitQualifyingKnockoutMatches,
@@ -230,6 +232,26 @@ describe('season roster delete', () => {
     expect(buildDeleteRosterPlayerRequest('player-1')).toEqual({
       method: 'DELETE',
       body: JSON.stringify({ playerId: 'player-1' }),
+    });
+  });
+});
+
+describe('season archive', () => {
+  it('does not continue when the confirmation is cancelled', () => {
+    const confirmArchive = vi.fn().mockReturnValue(false);
+
+    expect(shouldArchiveSeason(confirmArchive)).toBe(false);
+    expect(confirmArchive).toHaveBeenCalledWith('Finalize and archive this season? Active draft or live sessions must be finished first.');
+  });
+
+  it('builds the archive season request with an end timestamp', () => {
+    expect(buildArchiveSeasonRequest('season-1', '2026-06-26T01:23:45.000Z')).toEqual({
+      method: 'PATCH',
+      body: JSON.stringify({
+        seasonId: 'season-1',
+        status: 'archived',
+        endsAt: '2026-06-26T01:23:45.000Z',
+      }),
     });
   });
 });
