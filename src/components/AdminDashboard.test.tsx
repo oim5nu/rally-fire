@@ -7,6 +7,7 @@ import {
   createManualPairRows,
   createDefaultKnockoutSetup,
   createQualifyingKnockoutSetup,
+  getQualifyingConsolationTeams,
   isValidKnockoutSetup,
   shouldRemoveRosterPlayer,
   splitQualifyingKnockoutMatches,
@@ -146,6 +147,17 @@ describe('qualifying knockout setup', () => {
       consolationMatches: [matches[5]],
       bracketMatches: matches.slice(6),
     });
+  });
+
+  it('finds the two eliminated teams for the consolation playoff preview', () => {
+    const standings = [
+      { seed: 1, qualified: true },
+      { seed: 2, qualified: true },
+      { seed: 5, qualified: false },
+      { seed: 9, qualified: false },
+    ];
+
+    expect(getQualifyingConsolationTeams(standings as ReturnType<typeof buildQualifyingStandings>).map((standing) => standing.seed)).toEqual([5, 9]);
   });
 });
 

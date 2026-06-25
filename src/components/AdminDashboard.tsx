@@ -332,6 +332,10 @@ export function splitQualifyingKnockoutMatches(matches: AdminSession['matches'])
   };
 }
 
+export function getQualifyingConsolationTeams(standings: ReturnType<typeof buildQualifyingStandings>) {
+  return standings.filter((standing) => !standing.qualified);
+}
+
 function formatName(format: AdminSession['format']) {
   if (format === 'knockout') return 'Knockout';
   if (format === 'qualifying_knockout') return 'Qualifying knockout';
@@ -393,6 +397,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     ? buildQualifyingStandings(session.teams, qualifierMatches)
     : [];
   const qualifyingAdvancers = qualifyingStandings.filter((standing) => standing.qualified);
+  const qualifyingConsolationTeams = getQualifyingConsolationTeams(qualifyingStandings);
   const qualifiersComplete = session?.format === 'qualifying_knockout'
     && qualifierMatches.length === 5
     && qualifierMatches.every((match) => match.status === 'completed')
@@ -860,16 +865,22 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                         </div>
                       </div>
                     )}
-                    {bracketMatches.length > 0 ? (
-                      <>
-                        {consolationMatches.length > 0 && (
-                          <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
-                            <div><h3 className="text-sm font-black text-white">Eliminated pair playoff</h3><p className="mt-1 text-xs text-on-surface-variant">The two eliminated pairs can still play and record their score.</p></div>
-                            {consolationMatches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}
+                    {qualifyingConsolationTeams.length === 2 && (
+                      <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
+                        <div><h3 className="text-sm font-black text-white">Eliminated pair playoff</h3><p className="mt-1 text-xs text-on-surface-variant">The two eliminated pairs can still play and record their score after the knockout bracket starts.</p></div>
+                        {consolationMatches.length > 0 ? (
+                          consolationMatches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)
+                        ) : (
+                          <div className="flex items-center justify-between gap-3 rounded-lg bg-surface-container px-3 py-3 text-sm text-white">
+                            <span className="font-bold">#{qualifyingConsolationTeams[0].seed} {qualifyingConsolationTeams[0].team.members.map((member) => member.name).join(' / ')}</span>
+                            <span className="text-xs font-black text-on-surface-variant">vs</span>
+                            <span className="text-right font-bold">#{qualifyingConsolationTeams[1].seed} {qualifyingConsolationTeams[1].team.members.map((member) => member.name).join(' / ')}</span>
                           </div>
                         )}
-                        <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
-                      </>
+                      </div>
+                    )}
+                    {bracketMatches.length > 0 ? (
+                      <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
                     ) : qualifyingBracketPending ? (
                       <div className="space-y-3 rounded-xl border border-primary-fixed/30 bg-primary-fixed/10 p-3">
                         <div><h3 className="text-sm font-black text-white">Configure top-eight knockout bracket</h3><p className="mt-1 text-xs text-on-surface-variant">Place each qualified team into the main bracket slots manually before starting the knockout stage.</p></div>
