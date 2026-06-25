@@ -222,6 +222,23 @@ export function rankQualifyingTeams(results: QualifyingTeamResult[]): Qualifying
   return ranked.map((standing, index) => ({ ...standing, qualified: index < 8 }));
 }
 
+export function buildQualifyingConsolationMatch(
+  standings: ReadonlyArray<Pick<QualifyingTeamStanding, 'teamId' | 'seed' | 'qualified'>>,
+  sequence: number,
+) {
+  const eliminated = standings
+    .filter((standing) => !standing.qualified)
+    .sort((left, right) => left.seed - right.seed);
+  if (eliminated.length !== 2) {
+    throw new Error('Exactly two eliminated teams are required for the consolation match.');
+  }
+  return {
+    teamAId: eliminated[0].teamId,
+    teamBId: eliminated[1].teamId,
+    sequence,
+  };
+}
+
 export function validateQualifyingKnockoutFinalization(
   format: string,
   matchRows: ReadonlyArray<{ bracketRound: number | null; status: string }>,

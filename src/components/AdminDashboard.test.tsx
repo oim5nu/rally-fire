@@ -9,6 +9,7 @@ import {
   createQualifyingKnockoutSetup,
   isValidKnockoutSetup,
   shouldRemoveRosterPlayer,
+  splitQualifyingKnockoutMatches,
   sortPlayersByPoints,
 } from './AdminDashboard';
 
@@ -124,6 +125,27 @@ describe('qualifying knockout setup', () => {
       { seed: 8, qualified: false },
       { seed: 4, qualified: false },
     ]);
+  });
+
+  it('keeps the consolation match separate from qualifying standings', () => {
+    const matches = Array.from({ length: 13 }, (_, index) => ({
+      id: `m${index + 1}`,
+      sequence: index + 1,
+      teamAId: `team-${index + 1}`,
+      teamBId: `team-${index + 2}`,
+      scoreA: null,
+      scoreB: null,
+      court: null,
+      status: 'pending' as const,
+      bracketRound: index < 6 ? null : 1,
+      bracketPosition: index < 6 ? null : index - 5,
+    }));
+
+    expect(splitQualifyingKnockoutMatches(matches)).toEqual({
+      qualifierMatches: matches.slice(0, 5),
+      consolationMatches: [matches[5]],
+      bracketMatches: matches.slice(6),
+    });
   });
 });
 

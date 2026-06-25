@@ -20,6 +20,7 @@ import {
 } from '../../server/db/schema.js';
 import {
   buildConfiguredDraw,
+  buildQualifyingConsolationMatch,
   buildQualifyingKnockoutMatches,
   buildKnockoutDraw,
   buildDrawPersistenceRows,
@@ -469,6 +470,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
       const seedByTeamId = new Map(teamRows.map((team) => [team.id, team.seed]));
       let knockout;
       let advancingTeamIds: string[];
+      let consolationMatch: ReturnType<typeof buildQualifyingConsolationMatch>;
       try {
         const standings = rankQualifyingTeams(qualifierMatches.flatMap((match) => [
           {
@@ -486,6 +488,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
         ]));
         advancingTeamIds = standings.filter((standing) => standing.qualified).map((standing) => standing.teamId);
         knockout = buildKnockoutDraw(8, input.knockoutConfig as KnockoutConfig);
+        consolationMatch = buildQualifyingConsolationMatch(standings, matchRows.length + knockout.matches.length + 1);
       } catch (error) {
         sendJson(response, 409, {
           error: 'invalid_knockout_start',
@@ -507,6 +510,12 @@ export default async function handler(request: VercelRequest, response: VercelRe
           nextMatchId: match.nextKey ? matchIds.get(match.nextKey)! : null,
           winnerToSlot: match.winnerToSlot,
         })));
+        await transaction.insert(matches).values({
+          sessionId: session.id,
+          sequence: consolationMatch.sequence,
+          teamAId: consolationMatch.teamAId,
+          teamBId: consolationMatch.teamBId,
+        });
         await transaction
           .update(playSessions)
           .set({ status: 'in_progress', updatedAt: new Date() })
@@ -516,7 +525,11 @@ export default async function handler(request: VercelRequest, response: VercelRe
           action: 'session.knockout_started',
           entityType: 'play_session',
           entityId: session.id,
-          details: { advancingTeamIds, matchCount: knockout.matches.length },
+          details: {
+            advancingTeamIds,
+            consolationTeamIds: [consolationMatch.teamAId, consolationMatch.teamBId],
+            matchCount: knockout.matches.length + 1,
+          },
         });
       });
       sendJson(response, 200, { session: await getSessionDetail(session.id) });

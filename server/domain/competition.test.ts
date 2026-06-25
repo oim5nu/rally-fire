@@ -6,6 +6,7 @@ import {
   buildDrawPersistenceRows,
   buildKnockoutDraw,
   buildQualifyingKnockoutMatches,
+  buildQualifyingConsolationMatch,
   buildRoundRobinDraw,
   calculateMatchAwards,
   planAttendanceRollback,
@@ -151,6 +152,19 @@ describe('qualifying knockout format', () => {
         { bracketRound: 1, status: 'completed' },
       ]),
     ).not.toThrow();
+  });
+
+  it('creates a consolation match for the two eliminated teams', () => {
+    const standings = [
+      { teamId: 'seed-8', seed: 8, qualified: false },
+      { teamId: 'seed-4', seed: 4, qualified: false },
+    ];
+
+    expect(buildQualifyingConsolationMatch(standings, 12)).toEqual({
+      teamAId: 'seed-4',
+      teamBId: 'seed-8',
+      sequence: 12,
+    });
   });
 });
 

@@ -323,6 +323,15 @@ export function buildQualifyingStandings(
     .map((standing, index) => ({ ...standing, qualified: index < 8 }));
 }
 
+export function splitQualifyingKnockoutMatches(matches: AdminSession['matches']) {
+  const nonBracketMatches = matches.filter((match) => match.bracketRound === null);
+  return {
+    qualifierMatches: nonBracketMatches.slice(0, 5),
+    consolationMatches: nonBracketMatches.slice(5),
+    bracketMatches: matches.filter((match) => match.bracketRound !== null),
+  };
+}
+
 function formatName(format: AdminSession['format']) {
   if (format === 'knockout') return 'Knockout';
   if (format === 'qualifying_knockout') return 'Qualifying knockout';
@@ -374,8 +383,12 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const groupAPlayers = sortedPlayers.filter((player) => selectedPlayers.has(player.id) && groupOverrides[player.id] === 'A');
   const groupBPlayers = sortedPlayers.filter((player) => selectedPlayers.has(player.id) && groupOverrides[player.id] === 'B');
   const seededPairs = [...manualPairs].sort((left, right) => Number(left.number) - Number(right.number));
-  const qualifierMatches = session?.matches.filter((match) => match.bracketRound === null) ?? [];
-  const bracketMatches = session?.matches.filter((match) => match.bracketRound !== null) ?? [];
+  const splitMatches = session?.format === 'qualifying_knockout'
+    ? splitQualifyingKnockoutMatches(session.matches)
+    : null;
+  const qualifierMatches = splitMatches?.qualifierMatches ?? session?.matches.filter((match) => match.bracketRound === null) ?? [];
+  const consolationMatches = splitMatches?.consolationMatches ?? [];
+  const bracketMatches = splitMatches?.bracketMatches ?? session?.matches.filter((match) => match.bracketRound !== null) ?? [];
   const qualifyingStandings = session?.format === 'qualifying_knockout'
     ? buildQualifyingStandings(session.teams, qualifierMatches)
     : [];
@@ -848,7 +861,15 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                       </div>
                     )}
                     {bracketMatches.length > 0 ? (
-                      <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                      <>
+                        {consolationMatches.length > 0 && (
+                          <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
+                            <div><h3 className="text-sm font-black text-white">Eliminated pair playoff</h3><p className="mt-1 text-xs text-on-surface-variant">The two eliminated pairs can still play and record their score.</p></div>
+                            {consolationMatches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}
+                          </div>
+                        )}
+                        <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                      </>
                     ) : qualifyingBracketPending ? (
                       <div className="space-y-3 rounded-xl border border-primary-fixed/30 bg-primary-fixed/10 p-3">
                         <div><h3 className="text-sm font-black text-white">Configure top-eight knockout bracket</h3><p className="mt-1 text-xs text-on-surface-variant">Place each qualified team into the main bracket slots manually before starting the knockout stage.</p></div>
