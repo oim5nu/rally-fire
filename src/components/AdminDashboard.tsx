@@ -80,6 +80,19 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'The action could not be completed.';
 }
 
+const rosterRemovalConfirmation = 'Remove this player from the active season roster? History will be kept.';
+
+export function shouldRemoveRosterPlayer(confirmRemoval: (message: string) => boolean = window.confirm): boolean {
+  return confirmRemoval(rosterRemovalConfirmation);
+}
+
+export function buildDeleteRosterPlayerRequest(playerId: string): RequestInit {
+  return {
+    method: 'DELETE',
+    body: JSON.stringify({ playerId }),
+  };
+}
+
 function MatchScoreRow({
   match,
   session,
@@ -382,6 +395,14 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     if (succeeded) formElement.reset();
   }
 
+  async function deleteRosterPlayer(player: AdminPlayer) {
+    if (!shouldRemoveRosterPlayer()) return;
+    await runAction(
+      () => adminRequest('/api/admin/players', buildDeleteRosterPlayerRequest(player.id)),
+      `${player.name} removed from the active season roster.`,
+    );
+  }
+
   async function createSession(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -608,7 +629,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
               <button disabled={busy} className="rounded-lg border border-primary-fixed px-4 py-2 text-sm font-black text-primary-fixed sm:col-span-2 disabled:opacity-50">Add player</button>
             </form>
             <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
-              {sortedPlayers.map((player) => <div key={player.id} className="flex items-center justify-between rounded-lg bg-surface-dim/60 px-3 py-2 text-sm"><span className="font-bold text-white">{player.name}</span><span className="text-xs text-on-surface-variant">Skill {player.clubSkill} · {player.points} pts</span></div>)}
+              {sortedPlayers.map((player) => <div key={player.id} className="flex items-center justify-between gap-3 rounded-lg bg-surface-dim/60 px-3 py-2 text-sm"><span className="min-w-0 flex-1 truncate font-bold text-white">{player.name}</span><span className="shrink-0 text-xs text-on-surface-variant">Skill {player.clubSkill} · {player.points} pts</span><button type="button" disabled={busy} onClick={() => void deleteRosterPlayer(player)} aria-label={`Delete ${player.name}`} className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-red-300 underline disabled:opacity-50">Delete</button></div>)}
               {!players.length && <p className="py-5 text-center text-sm text-on-surface-variant">No players yet.</p>}
             </div>
             {players.length > 0 && (
@@ -668,7 +689,10 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                   <p className="text-xs text-amber-200">Groups A and B must be equal and contain at least two players each.</p>
                 ) : (
                   <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
-                    <h3 className="text-sm font-black text-white">Configure numbered pairs</h3>
+                    <div>
+                      <h3 className="text-sm font-black text-white">Manual draw setup</h3>
+                      <p className="mt-1 text-[11px] text-on-surface-variant">Configure every numbered pair before generating the draw.</p>
+                    </div>
                     {manualPairs.map((pair, index) => (
                       <div key={index} className="grid grid-cols-[5rem_1fr_1fr] gap-2">
                         <input aria-label={`Pair ${index + 1} number`} type="number" min="1" step="1" value={pair.number} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, number: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white" />
@@ -678,7 +702,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                     ))}
                     {session.format === 'knockout' && (
                       <div className="space-y-3 border-t border-outline-variant/20 pt-3">
-                        <div><h4 className="text-xs font-black uppercase tracking-wider text-primary-fixed">Knockout path</h4><p className="mt-1 text-[11px] text-on-surface-variant">Override preliminary matchups and place every bye seed or preliminary winner into the main bracket.</p></div>
+                        <div><h4 className="text-xs font-black uppercase tracking-wider text-primary-fixed">Manual knockout path</h4><p className="mt-1 text-[11px] text-on-surface-variant">Choose each preliminary matchup, then place every direct pair or preliminary winner into the main bracket slots.</p></div>
                         {knockoutSetup.preliminaryPairs.map((preliminary, index) => (
                           <div key={`preliminary-${index}`} className="grid grid-cols-[6rem_1fr_1fr] items-center gap-2">
                             <span className="text-[10px] font-bold uppercase text-on-surface-variant">Prelim {index + 1}</span>

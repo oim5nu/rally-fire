@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  buildDeleteRosterPlayerRequest,
   buildManualPairPayload,
   countAttendeeGroups,
   createManualPairRows,
   createDefaultKnockoutSetup,
   isValidKnockoutSetup,
+  shouldRemoveRosterPlayer,
   sortPlayersByPoints,
 } from './AdminDashboard';
 
@@ -79,5 +81,21 @@ describe('knockout setup', () => {
       ...setup,
       mainSources: setup.mainSources.map((source, index) => index === 1 ? setup.mainSources[0] : source),
     })).toBe(false);
+  });
+});
+
+describe('season roster delete', () => {
+  it('does not continue when the confirmation is cancelled', () => {
+    const confirmRemoval = vi.fn().mockReturnValue(false);
+
+    expect(shouldRemoveRosterPlayer(confirmRemoval)).toBe(false);
+    expect(confirmRemoval).toHaveBeenCalledWith('Remove this player from the active season roster? History will be kept.');
+  });
+
+  it('builds the active roster delete request', () => {
+    expect(buildDeleteRosterPlayerRequest('player-1')).toEqual({
+      method: 'DELETE',
+      body: JSON.stringify({ playerId: 'player-1' }),
+    });
   });
 });
