@@ -19,7 +19,7 @@ import {
 export const adminRole = pgEnum('admin_role', ['superadmin', 'admin']);
 export const membershipStatus = pgEnum('membership_status', ['active', 'disabled']);
 export const seasonStatus = pgEnum('season_status', ['active', 'archived']);
-export const sessionFormat = pgEnum('session_format', ['round_robin', 'knockout']);
+export const sessionFormat = pgEnum('session_format', ['round_robin', 'knockout', 'qualifying_knockout']);
 export const participantStatus = pgEnum('participant_status', ['attendee', 'reserve']);
 export const skillGroup = pgEnum('skill_group', ['A', 'B']);
 export const playSessionStatus = pgEnum('play_session_status', [

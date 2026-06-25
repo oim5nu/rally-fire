@@ -169,6 +169,68 @@ export function buildKnockoutDraw(teamCount: number, config: KnockoutConfig) {
   };
 }
 
+export function buildQualifyingKnockoutMatches(teamCount: number): DrawMatch[] {
+  if (teamCount !== 10) {
+    throw new Error('Qualifying knockout requires exactly ten teams.');
+  }
+  return Array.from({ length: 5 }, (_, index) => ({
+    teamAIndex: index * 2,
+    teamBIndex: index * 2 + 1,
+    sequence: index + 1,
+  }));
+}
+
+export interface QualifyingTeamResult {
+  teamId: string;
+  seed: number;
+  scoreFor: number;
+  scoreAgainst: number;
+}
+
+export interface QualifyingTeamStanding extends QualifyingTeamResult {
+  wins: number;
+  losses: number;
+  winPercentage: number;
+  pointDifferential: number;
+  qualified: boolean;
+}
+
+export function rankQualifyingTeams(results: QualifyingTeamResult[]): QualifyingTeamStanding[] {
+  if (results.length !== 10) {
+    throw new Error('Qualifying knockout standings require exactly ten team results.');
+  }
+  const ranked = results
+    .map((result) => {
+      const wins = result.scoreFor > result.scoreAgainst ? 1 : 0;
+      const losses = wins ? 0 : 1;
+      return {
+        ...result,
+        wins,
+        losses,
+        winPercentage: wins,
+        pointDifferential: result.scoreFor - result.scoreAgainst,
+        qualified: false,
+      };
+    })
+    .sort((left, right) =>
+      right.winPercentage - left.winPercentage
+      || right.pointDifferential - left.pointDifferential
+      || right.scoreFor - left.scoreFor
+      || left.seed - right.seed,
+    );
+
+  return ranked.map((standing, index) => ({ ...standing, qualified: index < 8 }));
+}
+
+export function validateQualifyingKnockoutFinalization(
+  format: string,
+  matchRows: ReadonlyArray<{ bracketRound: number | null; status: string }>,
+): void {
+  if (format === 'qualifying_knockout' && !matchRows.some((match) => match.bracketRound !== null)) {
+    throw new Error('Create and complete the knockout bracket before finalizing this session.');
+  }
+}
+
 export function knockoutStageLabel(round: number, matchCount: number): string {
   if (round === 0) return 'Preliminary';
   if (matchCount === 1) return 'Final';

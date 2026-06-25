@@ -22,6 +22,13 @@
       "when": 1782136992836,
       "tag": "0002_strange_wiccan",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1782349726103,
+      "tag": "0003_zippy_bastion",
+      "breakpoints": true
     }
   ]
 }

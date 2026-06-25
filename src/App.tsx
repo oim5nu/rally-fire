@@ -15,7 +15,7 @@ interface PublicState {
   activeSession: null | {
     id: string;
     name: string;
-    format: 'round_robin' | 'knockout';
+    format: 'round_robin' | 'knockout' | 'qualifying_knockout';
     teams: Array<{ id: string; seed: number; members: Array<{ playerId: string; name: string }> }>;
     matches: Array<{
       id: string;

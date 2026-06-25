@@ -5,10 +5,13 @@ import {
   buildDefaultKnockoutConfig,
   buildDrawPersistenceRows,
   buildKnockoutDraw,
+  buildQualifyingKnockoutMatches,
   buildRoundRobinDraw,
   calculateMatchAwards,
   planAttendanceRollback,
   knockoutStageLabel,
+  rankQualifyingTeams,
+  validateQualifyingKnockoutFinalization,
   validateWinnerAdvancement,
   validateCompletedScore,
   validateDraftFormatChange,
@@ -85,6 +88,69 @@ describe('knockout bracket generation', () => {
     expect(knockoutStageLabel(1, 4)).toBe('Quarterfinal');
     expect(knockoutStageLabel(2, 2)).toBe('Semifinal');
     expect(knockoutStageLabel(3, 1)).toBe('Final');
+  });
+});
+
+describe('qualifying knockout format', () => {
+  it('creates five adjacent qualifying matches for exactly ten teams', () => {
+    expect(buildQualifyingKnockoutMatches(10)).toEqual([
+      { teamAIndex: 0, teamBIndex: 1, sequence: 1 },
+      { teamAIndex: 2, teamBIndex: 3, sequence: 2 },
+      { teamAIndex: 4, teamBIndex: 5, sequence: 3 },
+      { teamAIndex: 6, teamBIndex: 7, sequence: 4 },
+      { teamAIndex: 8, teamBIndex: 9, sequence: 5 },
+    ]);
+    expect(() => buildQualifyingKnockoutMatches(8)).toThrow(/exactly ten/i);
+  });
+
+  it('ranks qualifiers by win percentage, point differential, points scored, then seed', () => {
+    const standings = rankQualifyingTeams([
+      { teamId: 'seed-1', seed: 1, scoreFor: 11, scoreAgainst: 8 },
+      { teamId: 'seed-2', seed: 2, scoreFor: 8, scoreAgainst: 11 },
+      { teamId: 'seed-3', seed: 3, scoreFor: 11, scoreAgainst: 3 },
+      { teamId: 'seed-4', seed: 4, scoreFor: 3, scoreAgainst: 11 },
+      { teamId: 'seed-5', seed: 5, scoreFor: 11, scoreAgainst: 9 },
+      { teamId: 'seed-6', seed: 6, scoreFor: 9, scoreAgainst: 11 },
+      { teamId: 'seed-7', seed: 7, scoreFor: 11, scoreAgainst: 6 },
+      { teamId: 'seed-8', seed: 8, scoreFor: 6, scoreAgainst: 11 },
+      { teamId: 'seed-9', seed: 9, scoreFor: 12, scoreAgainst: 10 },
+      { teamId: 'seed-10', seed: 10, scoreFor: 10, scoreAgainst: 12 },
+    ]);
+
+    expect(standings.map((team) => team.teamId)).toEqual([
+      'seed-3',
+      'seed-7',
+      'seed-1',
+      'seed-9',
+      'seed-5',
+      'seed-10',
+      'seed-6',
+      'seed-2',
+      'seed-8',
+      'seed-4',
+    ]);
+    expect(standings.slice(0, 8).map((team) => team.qualified)).toEqual(Array(8).fill(true));
+    expect(standings.slice(8).map((team) => team.qualified)).toEqual([false, false]);
+  });
+
+  it('does not allow finalization before the knockout stage exists', () => {
+    expect(() =>
+      validateQualifyingKnockoutFinalization('qualifying_knockout', [
+        { bracketRound: null, status: 'completed' },
+        { bracketRound: null, status: 'completed' },
+      ]),
+    ).toThrow(/knockout bracket/i);
+    expect(() =>
+      validateQualifyingKnockoutFinalization('qualifying_knockout', [
+        { bracketRound: null, status: 'completed' },
+        { bracketRound: 1, status: 'completed' },
+      ]),
+    ).not.toThrow();
+    expect(() =>
+      validateQualifyingKnockoutFinalization('knockout', [
+        { bracketRound: 1, status: 'completed' },
+      ]),
+    ).not.toThrow();
   });
 });
 

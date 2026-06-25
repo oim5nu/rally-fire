@@ -20,22 +20,34 @@ import {
 } from '../../server/db/schema.js';
 import {
   buildConfiguredDraw,
+  buildQualifyingKnockoutMatches,
   buildKnockoutDraw,
   buildDrawPersistenceRows,
   calculateMatchAwards,
   planAttendanceRollback,
+  rankQualifyingTeams,
   validateCompletedScore,
   validateDraftFormatChange,
+  validateQualifyingKnockoutFinalization,
   validateWinnerAdvancement,
   type KnockoutConfig,
 } from '../../server/domain/competition.js';
+
+const sessionFormats = ['round_robin', 'knockout', 'qualifying_knockout'] as const;
+const knockoutConfigSchema = z.object({
+  preliminaryPairs: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
+  mainSources: z.array(z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('team'), teamIndex: z.number().int().nonnegative() }),
+    z.object({ kind: z.literal('preliminary'), matchIndex: z.number().int().nonnegative() }),
+  ])),
+});
 
 const actionSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('create'),
     name: z.string().trim().min(1).max(100),
     scheduledAt: z.iso.datetime(),
-    format: z.enum(['round_robin', 'knockout']).default('round_robin'),
+    format: z.enum(sessionFormats).default('round_robin'),
     replacementForSessionId: z.uuid().optional(),
   }),
   z.object({
@@ -53,13 +65,12 @@ const actionSchema = z.discriminatedUnion('action', [
       groupAPlayerId: z.uuid(),
       groupBPlayerId: z.uuid(),
     })).min(2),
-    knockoutConfig: z.object({
-      preliminaryPairs: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
-      mainSources: z.array(z.discriminatedUnion('kind', [
-        z.object({ kind: z.literal('team'), teamIndex: z.number().int().nonnegative() }),
-        z.object({ kind: z.literal('preliminary'), matchIndex: z.number().int().nonnegative() }),
-      ])),
-    }).optional(),
+    knockoutConfig: knockoutConfigSchema.optional(),
+  }),
+  z.object({
+    action: z.literal('start_knockout'),
+    sessionId: z.uuid(),
+    knockoutConfig: knockoutConfigSchema,
   }),
   z.object({
     action: z.literal('score'),
@@ -73,7 +84,7 @@ const actionSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('set_format'),
     sessionId: z.uuid(),
-    format: z.enum(['round_robin', 'knockout']),
+    format: z.enum(sessionFormats),
   }),
   z.object({
     action: z.literal('void'),
@@ -340,6 +351,9 @@ export default async function handler(request: VercelRequest, response: VercelRe
         knockout = session.format === 'knockout'
           ? buildKnockoutDraw(draw.teams.length, input.knockoutConfig as KnockoutConfig)
           : null;
+        if (session.format === 'qualifying_knockout') {
+          draw = { teams: draw.teams, matches: buildQualifyingKnockoutMatches(draw.teams.length) };
+        }
       } catch (error) {
         sendJson(response, 409, {
           error: 'invalid_draw',
@@ -413,6 +427,96 @@ export default async function handler(request: VercelRequest, response: VercelRe
             teamCount: draw.teams.length,
             matchCount: knockout?.matches.length ?? draw.matches.length,
           },
+        });
+      });
+      sendJson(response, 200, { session: await getSessionDetail(session.id) });
+      return;
+    }
+
+    if (input.action === 'start_knockout') {
+      const [session] = await database
+        .select()
+        .from(playSessions)
+        .where(eq(playSessions.id, input.sessionId))
+        .limit(1);
+      if (!session || session.format !== 'qualifying_knockout' || !['draw_published', 'in_progress'].includes(session.status)) {
+        sendJson(response, 409, { error: 'qualifying_knockout_session_required' });
+        return;
+      }
+      const [teamRows, matchRows] = await Promise.all([
+        database.select().from(teams).where(eq(teams.sessionId, session.id)).orderBy(teams.seed),
+        database.select().from(matches).where(eq(matches.sessionId, session.id)).orderBy(matches.sequence),
+      ]);
+      const qualifierMatches = matchRows.filter((match) => match.bracketRound === null);
+      const bracketMatches = matchRows.filter((match) => match.bracketRound !== null);
+      if (bracketMatches.length) {
+        sendJson(response, 409, { error: 'knockout_already_started' });
+        return;
+      }
+      if (
+        teamRows.length !== 10
+        || qualifierMatches.length !== 5
+        || qualifierMatches.some((match) =>
+          match.status !== 'completed'
+          || !match.teamAId
+          || !match.teamBId
+          || match.scoreA === null
+          || match.scoreB === null)
+      ) {
+        sendJson(response, 409, { error: 'qualifiers_incomplete', message: 'Complete all five qualifying matches before starting the knockout bracket.' });
+        return;
+      }
+      const seedByTeamId = new Map(teamRows.map((team) => [team.id, team.seed]));
+      let knockout;
+      let advancingTeamIds: string[];
+      try {
+        const standings = rankQualifyingTeams(qualifierMatches.flatMap((match) => [
+          {
+            teamId: match.teamAId!,
+            seed: seedByTeamId.get(match.teamAId!)!,
+            scoreFor: match.scoreA!,
+            scoreAgainst: match.scoreB!,
+          },
+          {
+            teamId: match.teamBId!,
+            seed: seedByTeamId.get(match.teamBId!)!,
+            scoreFor: match.scoreB!,
+            scoreAgainst: match.scoreA!,
+          },
+        ]));
+        advancingTeamIds = standings.filter((standing) => standing.qualified).map((standing) => standing.teamId);
+        knockout = buildKnockoutDraw(8, input.knockoutConfig as KnockoutConfig);
+      } catch (error) {
+        sendJson(response, 409, {
+          error: 'invalid_knockout_start',
+          message: error instanceof Error ? error.message : 'The knockout bracket is invalid.',
+        });
+        return;
+      }
+      await database.transaction(async (transaction) => {
+        const matchIds = new Map(knockout.matches.map((match) => [match.key, randomUUID()]));
+        const sequenceOffset = matchRows.reduce((max, match) => Math.max(max, match.sequence), 0);
+        await transaction.insert(matches).values(knockout.matches.map((match, index) => ({
+          id: matchIds.get(match.key)!,
+          sessionId: session.id,
+          sequence: sequenceOffset + index + 1,
+          teamAId: match.teamAIndex === null ? null : advancingTeamIds[match.teamAIndex],
+          teamBId: match.teamBIndex === null ? null : advancingTeamIds[match.teamBIndex],
+          bracketRound: match.round,
+          bracketPosition: match.position,
+          nextMatchId: match.nextKey ? matchIds.get(match.nextKey)! : null,
+          winnerToSlot: match.winnerToSlot,
+        })));
+        await transaction
+          .update(playSessions)
+          .set({ status: 'in_progress', updatedAt: new Date() })
+          .where(eq(playSessions.id, session.id));
+        await transaction.insert(auditLog).values({
+          actorMembershipId: admin.membership.id,
+          action: 'session.knockout_started',
+          entityType: 'play_session',
+          entityId: session.id,
+          details: { advancingTeamIds, matchCount: knockout.matches.length },
         });
       });
       sendJson(response, 200, { session: await getSessionDetail(session.id) });
@@ -558,6 +662,11 @@ export default async function handler(request: VercelRequest, response: VercelRe
             .orderBy(matches.sequence);
           if (!matchRows.length || matchRows.some((match) => match.status !== 'completed')) {
             return { error: 'all_matches_must_be_completed' as const };
+          }
+          try {
+            validateQualifyingKnockoutFinalization(session.format, matchRows);
+          } catch {
+            return { error: 'knockout_bracket_required' as const };
           }
           const members = await transaction
             .select()

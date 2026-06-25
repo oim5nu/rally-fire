@@ -38,7 +38,7 @@ interface AdminSession {
   id: string;
   name: string;
   scheduledAt: string;
-  format: 'round_robin' | 'knockout';
+  format: 'round_robin' | 'knockout' | 'qualifying_knockout';
   status: 'draft' | 'draw_published' | 'in_progress' | 'finalized' | 'voided';
   participants: Array<{
     playerId: string;
@@ -253,6 +253,13 @@ export function createDefaultKnockoutSetup(teamCount: number): KnockoutSetup {
   };
 }
 
+export function createQualifyingKnockoutSetup(): KnockoutSetup {
+  return {
+    preliminaryPairs: [],
+    mainSources: uiBracketSeedOrder(8).map((seed) => ({ kind: 'team', teamIndex: seed - 1 })),
+  };
+}
+
 export function isValidKnockoutSetup(teamCount: number, setup: KnockoutSetup): boolean {
   if (teamCount < 2) return false;
   const mainSize = 2 ** Math.floor(Math.log2(teamCount));
@@ -263,6 +270,63 @@ export function isValidKnockoutSetup(teamCount: number, setup: KnockoutSetup): b
   setup.mainSources.forEach((source) => source.kind === 'team' ? teams.push(source.teamIndex) : preliminaries.push(source.matchIndex));
   return [...teams].sort((a, b) => a - b).join(',') === Array.from({ length: teamCount }, (_, index) => index).join(',')
     && [...preliminaries].sort((a, b) => a - b).join(',') === Array.from({ length: preliminaryCount }, (_, index) => index).join(',');
+}
+
+export function buildQualifyingStandings(
+  teams: AdminSession['teams'],
+  matches: AdminSession['matches'],
+) {
+  const teamMap = new Map(teams.map((team) => [team.id, team]));
+  const results = matches
+    .filter((match) =>
+      match.bracketRound === null
+      && match.status === 'completed'
+      && match.teamAId
+      && match.teamBId
+      && match.scoreA !== null
+      && match.scoreB !== null)
+    .flatMap((match) => [
+      {
+        team: teamMap.get(match.teamAId!)!,
+        scoreFor: match.scoreA!,
+        scoreAgainst: match.scoreB!,
+      },
+      {
+        team: teamMap.get(match.teamBId!)!,
+        scoreFor: match.scoreB!,
+        scoreAgainst: match.scoreA!,
+      },
+    ])
+    .filter((result) => result.team);
+
+  if (results.length !== 10) return [];
+
+  return results
+    .map((result) => {
+      const wins = result.scoreFor > result.scoreAgainst ? 1 : 0;
+      return {
+        ...result,
+        seed: result.team.seed,
+        wins,
+        losses: wins ? 0 : 1,
+        winPercentage: wins,
+        pointDifferential: result.scoreFor - result.scoreAgainst,
+        qualified: false,
+      };
+    })
+    .sort((left, right) =>
+      right.winPercentage - left.winPercentage
+      || right.pointDifferential - left.pointDifferential
+      || right.scoreFor - left.scoreFor
+      || left.seed - right.seed,
+    )
+    .map((standing, index) => ({ ...standing, qualified: index < 8 }));
+}
+
+function formatName(format: AdminSession['format']) {
+  if (format === 'knockout') return 'Knockout';
+  if (format === 'qualifying_knockout') return 'Qualifying knockout';
+  return 'Round robin';
 }
 
 export default function AdminDashboard({ membership, onDataChanged }: AdminDashboardProps) {
@@ -310,6 +374,17 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const groupAPlayers = sortedPlayers.filter((player) => selectedPlayers.has(player.id) && groupOverrides[player.id] === 'A');
   const groupBPlayers = sortedPlayers.filter((player) => selectedPlayers.has(player.id) && groupOverrides[player.id] === 'B');
   const seededPairs = [...manualPairs].sort((left, right) => Number(left.number) - Number(right.number));
+  const qualifierMatches = session?.matches.filter((match) => match.bracketRound === null) ?? [];
+  const bracketMatches = session?.matches.filter((match) => match.bracketRound !== null) ?? [];
+  const qualifyingStandings = session?.format === 'qualifying_knockout'
+    ? buildQualifyingStandings(session.teams, qualifierMatches)
+    : [];
+  const qualifyingAdvancers = qualifyingStandings.filter((standing) => standing.qualified);
+  const qualifiersComplete = session?.format === 'qualifying_knockout'
+    && qualifierMatches.length === 5
+    && qualifierMatches.every((match) => match.status === 'completed')
+    && qualifyingAdvancers.length === 8;
+  const qualifyingBracketPending = session?.format === 'qualifying_knockout' && qualifiersComplete && bracketMatches.length === 0;
 
   useEffect(() => {
     setManualPairs(createManualPairRows(
@@ -319,8 +394,12 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   }, [selectedPlayers, groupOverrides, players]);
 
   useEffect(() => {
+    if (session?.format === 'qualifying_knockout' && session.status !== 'draft') {
+      setKnockoutSetup(createQualifyingKnockoutSetup());
+      return;
+    }
     setKnockoutSetup(createDefaultKnockoutSetup(manualPairs.length));
-  }, [manualPairs.length, session?.format]);
+  }, [manualPairs.length, session?.format, session?.status]);
 
   useEffect(() => {
     if (playerError) reportError(errorMessage(playerError));
@@ -483,6 +562,21 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
         }),
       }),
       'Match schedule published.',
+    );
+  }
+
+  async function startQualifyingKnockout() {
+    if (!session) return;
+    await runAction(
+      () => adminRequest('/api/admin/sessions', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'start_knockout',
+          sessionId: session.id,
+          knockoutConfig: knockoutSetup,
+        }),
+      }),
+      'Knockout bracket started with the top eight qualifiers.',
     );
   }
 
@@ -659,6 +753,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                     <select name="format" defaultValue="round_robin" className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-3 font-normal normal-case tracking-normal text-white">
                       <option value="round_robin">Round robin</option>
                       <option value="knockout">Knockout bracket</option>
+                      <option value="qualifying_knockout">Qualifying knockout</option>
                     </select>
                   </label>
                   <button disabled={busy} className="rounded-lg bg-primary-fixed px-4 py-2 text-sm font-black text-on-primary-fixed sm:col-span-2 disabled:opacity-50">Create session</button>
@@ -667,7 +762,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
               </>
             ) : session.status === 'draft' ? (
               <>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees, assign every player to A or B, save attendance, then configure each numbered pair.</p></div><label className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Competition format<select aria-label="Draft session competition format" value={session.format} disabled={busy} onChange={(event) => void changeSessionFormat(event.target.value as AdminSession['format'])} className="mt-1 block rounded-lg border border-primary-fixed/40 bg-surface-dim px-3 py-2 text-xs font-bold normal-case text-white disabled:opacity-50"><option value="round_robin">Round robin</option><option value="knockout">Knockout bracket</option></select></label></div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Draft session</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Choose attendees, assign every player to A or B, save attendance, then configure each numbered pair.</p></div><label className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Competition format<select aria-label="Draft session competition format" value={session.format} disabled={busy} onChange={(event) => void changeSessionFormat(event.target.value as AdminSession['format'])} className="mt-1 block rounded-lg border border-primary-fixed/40 bg-surface-dim px-3 py-2 text-xs font-bold normal-case text-white disabled:opacity-50"><option value="round_robin">Round robin</option><option value="knockout">Knockout bracket</option><option value="qualifying_knockout">Qualifying knockout</option></select></label></div>
                 <p className="text-sm font-bold text-white" aria-live="polite">
                   {attendeeGroups.attendees} attendees · A: {attendeeGroups.groupA} · B: {attendeeGroups.groupB} · Auto: {attendeeGroups.auto}
                 </p>
@@ -722,20 +817,61 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                         {!isValidKnockoutSetup(manualPairs.length, knockoutSetup) && <p className="text-xs text-red-300">Use every pair and preliminary winner exactly once.</p>}
                       </div>
                     )}
-                    <button type="button" disabled={busy || !buildManualPairPayload(manualPairs, groupAPlayers.map((player) => player.id), groupBPlayers.map((player) => player.id)) || (session.format === 'knockout' && !isValidKnockoutSetup(manualPairs.length, knockoutSetup))} onClick={generateSchedule} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate {session.format === 'knockout' ? 'knockout bracket' : 'match schedule'}</button>
+                    {session.format === 'qualifying_knockout' && manualPairs.length !== 10 && <p className="text-xs text-red-300">Qualifying knockout requires exactly 10 pairs.</p>}
+                    <button type="button" disabled={busy || !buildManualPairPayload(manualPairs, groupAPlayers.map((player) => player.id), groupBPlayers.map((player) => player.id)) || (session.format === 'knockout' && !isValidKnockoutSetup(manualPairs.length, knockoutSetup)) || (session.format === 'qualifying_knockout' && manualPairs.length !== 10)} onClick={generateSchedule} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Generate {session.format === 'knockout' ? 'knockout bracket' : session.format === 'qualifying_knockout' ? 'qualifying matches' : 'match schedule'}</button>
                   </div>
                 )}
               </>
             ) : (
               <>
-                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Live · {session.format === 'knockout' ? 'Knockout' : 'Round robin'}</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Scores save immediately to the public view. Ties are not accepted.</p></div>
+                <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Live · {formatName(session.format)}</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Scores save immediately to the public view. Ties are not accepted.</p></div>
                 <button type="button" disabled={busy} onClick={returnToAttendance} className="w-fit text-xs font-bold text-red-300 underline disabled:opacity-50">Return to attendance</button>
                 {session.format === 'knockout' ? (
                   <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                ) : session.format === 'qualifying_knockout' ? (
+                  <div className="space-y-4">
+                    <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
+                      <div><h3 className="text-sm font-black text-white">Qualifying matches</h3><p className="mt-1 text-xs text-on-surface-variant">Complete all five matches. The lowest two teams by win %, point differential, points scored, then seed are eliminated.</p></div>
+                      {qualifierMatches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}
+                    </div>
+                    {qualifyingStandings.length > 0 && (
+                      <div className="rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
+                        <h3 className="text-sm font-black text-white">Qualifier standings</h3>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          {qualifyingStandings.map((standing, index) => (
+                            <div key={standing.team.id} className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-xs ${standing.qualified ? 'bg-primary-fixed/10 text-white' : 'bg-red-950/30 text-red-100'}`}>
+                              <span className="font-bold">{index + 1}. #{standing.seed} {standing.team.members.map((member) => member.name).join(' / ')}</span>
+                              <span className="shrink-0 text-[10px] uppercase">{standing.qualified ? 'Top 8' : 'Eliminated'} · {standing.pointDifferential >= 0 ? '+' : ''}{standing.pointDifferential}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {bracketMatches.length > 0 ? (
+                      <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                    ) : qualifyingBracketPending ? (
+                      <div className="space-y-3 rounded-xl border border-primary-fixed/30 bg-primary-fixed/10 p-3">
+                        <div><h3 className="text-sm font-black text-white">Configure top-eight knockout bracket</h3><p className="mt-1 text-xs text-on-surface-variant">Place each qualified team into the main bracket slots manually before starting the knockout stage.</p></div>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {knockoutSetup.mainSources.map((source, index) => (
+                            <label key={index} className="text-[10px] font-bold uppercase text-on-surface-variant">Main slot {index + 1}
+                              <select aria-label={`Qualifier knockout slot ${index + 1}`} value={source.kind === 'team' ? `team:${source.teamIndex}` : ''} onChange={(event) => { const [, rawIndex] = event.target.value.split(':'); setKnockoutSetup((current) => ({ ...current, mainSources: current.mainSources.map((entry, entryIndex) => entryIndex === index ? { kind: 'team', teamIndex: Number(rawIndex) } : entry) })); }} className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs font-normal normal-case text-white">
+                                {qualifyingAdvancers.map((standing, advancerIndex) => <option key={standing.team.id} value={`team:${advancerIndex}`}>#{standing.seed} {standing.team.members.map((member) => member.name).join(' / ')}</option>)}
+                              </select>
+                            </label>
+                          ))}
+                        </div>
+                        {!isValidKnockoutSetup(8, knockoutSetup) && <p className="text-xs text-red-300">Use every qualified team exactly once.</p>}
+                        <button type="button" disabled={busy || !isValidKnockoutSetup(8, knockoutSetup)} onClick={startQualifyingKnockout} className="w-full rounded-lg bg-primary-fixed px-4 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Start knockout bracket</button>
+                      </div>
+                    ) : (
+                      <p className="rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3 text-xs text-amber-200">Complete all qualifying matches to unlock the top-eight knockout bracket.</p>
+                    )}
+                  </div>
                 ) : (
                   <div className="space-y-3">{session.matches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}</div>
                 )}
-                <button type="button" disabled={busy || session.matches.some((match) => match.status !== 'completed')} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'finalize', sessionId: session.id }) }), 'Session finalized and points awarded once.')} className="w-full rounded-lg bg-primary-fixed px-5 py-3 text-sm font-black text-on-primary-fixed disabled:cursor-not-allowed disabled:opacity-40">Finalize session and award points</button>
+                <button type="button" disabled={busy || session.matches.some((match) => match.status !== 'completed') || qualifyingBracketPending} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'finalize', sessionId: session.id }) }), 'Session finalized and points awarded once.')} className="w-full rounded-lg bg-primary-fixed px-5 py-3 text-sm font-black text-on-primary-fixed disabled:cursor-not-allowed disabled:opacity-40">Finalize session and award points</button>
               </>
             )}
           </section>

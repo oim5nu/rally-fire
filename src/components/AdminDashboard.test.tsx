@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildDeleteRosterPlayerRequest,
+  buildQualifyingStandings,
   buildManualPairPayload,
   countAttendeeGroups,
   createManualPairRows,
   createDefaultKnockoutSetup,
+  createQualifyingKnockoutSetup,
   isValidKnockoutSetup,
   shouldRemoveRosterPlayer,
   sortPlayersByPoints,
@@ -81,6 +83,47 @@ describe('knockout setup', () => {
       ...setup,
       mainSources: setup.mainSources.map((source, index) => index === 1 ? setup.mainSources[0] : source),
     })).toBe(false);
+  });
+});
+
+describe('qualifying knockout setup', () => {
+  it('creates an eight-team main bracket setup for qualifiers', () => {
+    const setup = createQualifyingKnockoutSetup();
+
+    expect(setup.preliminaryPairs).toEqual([]);
+    expect(setup.mainSources).toHaveLength(8);
+    expect(isValidKnockoutSetup(8, setup)).toBe(true);
+  });
+
+  it('builds qualifier standings with the bottom two eliminated', () => {
+    const teams = Array.from({ length: 10 }, (_, index) => ({
+      id: `team-${index + 1}`,
+      seed: index + 1,
+      members: [{ playerId: `p${index}a`, name: `Team ${index + 1}A`, group: 'A' as const }],
+    }));
+    const matches = [
+      { id: 'm1', sequence: 1, teamAId: 'team-1', teamBId: 'team-2', scoreA: 11, scoreB: 8, court: null, status: 'completed' as const, bracketRound: null, bracketPosition: null },
+      { id: 'm2', sequence: 2, teamAId: 'team-3', teamBId: 'team-4', scoreA: 11, scoreB: 3, court: null, status: 'completed' as const, bracketRound: null, bracketPosition: null },
+      { id: 'm3', sequence: 3, teamAId: 'team-5', teamBId: 'team-6', scoreA: 11, scoreB: 9, court: null, status: 'completed' as const, bracketRound: null, bracketPosition: null },
+      { id: 'm4', sequence: 4, teamAId: 'team-7', teamBId: 'team-8', scoreA: 11, scoreB: 6, court: null, status: 'completed' as const, bracketRound: null, bracketPosition: null },
+      { id: 'm5', sequence: 5, teamAId: 'team-9', teamBId: 'team-10', scoreA: 12, scoreB: 10, court: null, status: 'completed' as const, bracketRound: null, bracketPosition: null },
+    ];
+
+    expect(buildQualifyingStandings(teams, matches).map((standing) => ({
+      seed: standing.seed,
+      qualified: standing.qualified,
+    }))).toEqual([
+      { seed: 3, qualified: true },
+      { seed: 7, qualified: true },
+      { seed: 1, qualified: true },
+      { seed: 9, qualified: true },
+      { seed: 5, qualified: true },
+      { seed: 10, qualified: true },
+      { seed: 6, qualified: true },
+      { seed: 2, qualified: true },
+      { seed: 8, qualified: false },
+      { seed: 4, qualified: false },
+    ]);
   });
 });
 
