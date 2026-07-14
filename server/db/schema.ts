@@ -30,6 +30,7 @@ export const playSessionStatus = pgEnum('play_session_status', [
   'voided',
 ]);
 export const matchStatus = pgEnum('match_status', ['pending', 'in_progress', 'completed']);
+export const matchKind = pgEnum('match_kind', ['round_robin', 'qualifier', 'championship', 'placement']);
 export const winnerSlot = pgEnum('winner_slot', ['A', 'B']);
 export const ledgerReason = pgEnum('ledger_reason', [
   'opening_balance',
@@ -220,14 +221,20 @@ export const matches = pgTable(
       .notNull()
       .references(() => playSessions.id, { onDelete: 'cascade' }),
     sequence: integer('sequence').notNull(),
+    matchKind: matchKind('match_kind').notNull().default('round_robin'),
     teamAId: uuid('team_a_id')
       .references(() => teams.id, { onDelete: 'restrict' }),
     teamBId: uuid('team_b_id')
       .references(() => teams.id, { onDelete: 'restrict' }),
     bracketRound: integer('bracket_round'),
     bracketPosition: integer('bracket_position'),
+    placementGroup: integer('placement_group'),
+    placementBestRank: integer('placement_best_rank'),
+    placementWorstRank: integer('placement_worst_rank'),
     nextMatchId: uuid('next_match_id').references((): AnyPgColumn => matches.id, { onDelete: 'set null' }),
     winnerToSlot: winnerSlot('winner_to_slot'),
+    loserNextMatchId: uuid('loser_next_match_id').references((): AnyPgColumn => matches.id, { onDelete: 'set null' }),
+    loserToSlot: winnerSlot('loser_to_slot'),
     court: text('court'),
     scoreA: integer('score_a'),
     scoreB: integer('score_b'),
@@ -238,10 +245,15 @@ export const matches = pgTable(
   (table) => [
     uniqueIndex('matches_session_sequence_unique').on(table.sessionId, table.sequence),
     uniqueIndex('matches_session_bracket_position_unique')
-      .on(table.sessionId, table.bracketRound, table.bracketPosition)
+      .on(table.sessionId, table.matchKind, sql`coalesce(${table.placementGroup}, 0)`, table.bracketRound, table.bracketPosition)
       .where(sql`${table.bracketRound} IS NOT NULL`),
     index('matches_next_match_idx').on(table.nextMatchId),
+    index('matches_loser_next_match_idx').on(table.loserNextMatchId),
     check('matches_different_teams', sql`${table.teamAId} <> ${table.teamBId}`),
+    check(
+      'matches_placement_metadata',
+      sql`(${table.matchKind} <> 'placement' AND ${table.placementGroup} IS NULL AND ${table.placementBestRank} IS NULL AND ${table.placementWorstRank} IS NULL) OR (${table.matchKind} = 'placement' AND ${table.placementGroup} IS NOT NULL AND ${table.placementBestRank} IS NOT NULL AND ${table.placementWorstRank} IS NOT NULL AND ${table.placementBestRank} < ${table.placementWorstRank})`,
+    ),
     check(
       'matches_scores_range',
       sql`(${table.scoreA} IS NULL OR ${table.scoreA} BETWEEN 0 AND 99) AND (${table.scoreB} IS NULL OR ${table.scoreB} BETWEEN 0 AND 99)`,

@@ -5,16 +5,19 @@ import {
   buildDefaultKnockoutConfig,
   buildDrawPersistenceRows,
   buildKnockoutDraw,
+  buildKnockoutTournament,
   buildQualifyingKnockoutMatches,
   buildQualifyingConsolationMatch,
   buildRoundRobinDraw,
   calculateMatchAwards,
   planAttendanceRollback,
   planQuarterFinalConfigReturn,
+  planPlacementRepair,
   knockoutStageLabel,
   rankQualifyingTeams,
   resolveQualifyingKnockoutTeams,
   validateQualifyingKnockoutFinalization,
+  validateOutcomeAdvancement,
   validateWinnerAdvancement,
   validateCompletedScore,
   validateDraftFormatChange,
@@ -38,6 +41,25 @@ describe('knockout winner advancement', () => {
   it('blocks a changed winner after the downstream match is scored', () => {
     expect(() => validateWinnerAdvancement('team-a', 'team-b', true)).toThrow(/downstream/i);
     expect(() => validateWinnerAdvancement('team-a', 'team-a', true)).not.toThrow();
+  });
+
+  it('validates winner and loser paths together', () => {
+    expect(() => validateOutcomeAdvancement({
+      currentWinnerTeamId: 'team-a',
+      nextWinnerTeamId: 'team-b',
+      winnerDownstreamScored: false,
+      currentLoserTeamId: 'team-b',
+      nextLoserTeamId: 'team-a',
+      loserDownstreamScored: false,
+    })).not.toThrow();
+    expect(() => validateOutcomeAdvancement({
+      currentWinnerTeamId: 'team-a',
+      nextWinnerTeamId: 'team-b',
+      winnerDownstreamScored: false,
+      currentLoserTeamId: 'team-b',
+      nextLoserTeamId: 'team-a',
+      loserDownstreamScored: true,
+    })).toThrow(/downstream/i);
   });
 });
 
@@ -91,6 +113,46 @@ describe('knockout bracket generation', () => {
     expect(knockoutStageLabel(1, 4)).toBe('Quarterfinal');
     expect(knockoutStageLabel(2, 2)).toBe('Semifinal');
     expect(knockoutStageLabel(3, 1)).toBe('Final');
+  });
+
+  it('builds championship and complete placement routes for eight teams', () => {
+    const tournament = buildKnockoutTournament(8, buildDefaultKnockoutConfig(8));
+    const championship = tournament.matches.filter((match) => match.matchKind === 'championship');
+    const placements = tournament.matches.filter((match) => match.matchKind === 'placement');
+
+    expect(championship).toHaveLength(7);
+    expect(placements).toHaveLength(5);
+    expect(tournament.placementGroups).toEqual([
+      { id: 1, bestRank: 3, worstRank: 4, entryMatchKeys: ['round-2-0', 'round-2-1'] },
+      { id: 2, bestRank: 5, worstRank: 8, entryMatchKeys: ['round-1-0', 'round-1-1', 'round-1-2', 'round-1-3'] },
+    ]);
+    expect(placements.filter((match) => match.placementGroup === 1)).toHaveLength(1);
+    expect(placements.filter((match) => match.placementGroup === 2)).toHaveLength(4);
+
+    for (const sourceKey of ['round-2-0', 'round-2-1', 'round-1-0', 'round-1-1', 'round-1-2', 'round-1-3']) {
+      expect(championship.find((match) => match.key === sourceKey)?.loserNextKey).toBeTruthy();
+    }
+    expect(championship.find((match) => match.key === 'round-3-0')?.loserNextKey).toBeNull();
+  });
+
+  it('classifies preliminary losers and merges a singleton into the next cohort', () => {
+    const tenTeam = buildKnockoutTournament(10, buildDefaultKnockoutConfig(10));
+    expect(tenTeam.placementGroups.map(({ bestRank, worstRank }) => [bestRank, worstRank])).toEqual([
+      [3, 4],
+      [5, 8],
+      [9, 10],
+    ]);
+
+    const nineTeam = buildKnockoutTournament(9, buildDefaultKnockoutConfig(9));
+    expect(nineTeam.placementGroups.map(({ bestRank, worstRank, entryMatchKeys }) => ({
+      bestRank,
+      worstRank,
+      entryCount: entryMatchKeys.length,
+    }))).toEqual([
+      { bestRank: 3, worstRank: 4, entryCount: 2 },
+      { bestRank: 5, worstRank: 9, entryCount: 5 },
+    ]);
+    expect(nineTeam.matches.filter((match) => match.matchKind === 'placement' && match.placementGroup === 2).length).toBeGreaterThan(4);
   });
 });
 
@@ -255,6 +317,26 @@ describe('quarter-final configuration return', () => {
     expect(() => planQuarterFinalConfigReturn('round_robin', 'in_progress', matches)).toThrow(/qualifying knockout/i);
     expect(() => planQuarterFinalConfigReturn('qualifying_knockout', 'draft', matches)).toThrow(/published or in progress/i);
     expect(() => planQuarterFinalConfigReturn('qualifying_knockout', 'in_progress', matches.slice(0, 5))).toThrow(/generated bracket/i);
+  });
+});
+
+describe('placement re-pairing', () => {
+  const rows = [
+    { id: 'source-1', matchKind: 'championship', placementGroup: null, status: 'completed', teamAId: 'team-1', teamBId: 'team-8', scoreA: 11, scoreB: 7, loserNextMatchId: 'place-1', loserToSlot: 'A' },
+    { id: 'source-2', matchKind: 'championship', placementGroup: null, status: 'completed', teamAId: 'team-4', teamBId: 'team-5', scoreA: 8, scoreB: 11, loserNextMatchId: 'place-1', loserToSlot: 'B' },
+    { id: 'place-1', matchKind: 'placement', placementGroup: 2, status: 'pending', teamAId: 'team-8', teamBId: 'team-4', scoreA: null, scoreB: null, loserNextMatchId: null, loserToSlot: null },
+  ] as const;
+
+  it('rewires the same resolved loser cohort in the requested order', () => {
+    expect(planPlacementRepair(rows, 2, ['team-4', 'team-8'])).toEqual([
+      { sourceMatchId: 'source-2', nextMatchId: 'place-1', slot: 'A', teamId: 'team-4' },
+      { sourceMatchId: 'source-1', nextMatchId: 'place-1', slot: 'B', teamId: 'team-8' },
+    ]);
+  });
+
+  it('rejects changed cohorts and placement groups that have started', () => {
+    expect(() => planPlacementRepair(rows, 2, ['team-8', 'team-8'])).toThrow(/exact cohort/i);
+    expect(() => planPlacementRepair(rows.map((row) => row.id === 'place-1' ? { ...row, status: 'completed' as const } : row), 2, ['team-8', 'team-4'])).toThrow(/already started/i);
   });
 });
 

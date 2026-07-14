@@ -63,6 +63,69 @@ export function planQuarterFinalConfigReturn(
   };
 }
 
+export function planPlacementRepair(
+  matchRows: ReadonlyArray<{
+    id: string;
+    sequence?: number;
+    matchKind: string;
+    placementGroup: number | null;
+    status: string;
+    teamAId: string | null;
+    teamBId: string | null;
+    scoreA: number | null;
+    scoreB: number | null;
+    loserNextMatchId: string | null;
+    loserToSlot: string | null;
+  }>,
+  placementGroup: number,
+  orderedTeamIds: readonly string[],
+) {
+  const placementMatches = matchRows.filter((match) => match.matchKind === 'placement' && match.placementGroup === placementGroup);
+  if (!placementMatches.length) throw new Error('The placement group does not exist.');
+  if (placementMatches.some((match) => match.status !== 'pending')) {
+    throw new Error('This placement group has already started.');
+  }
+  const placementMatchIds = new Set(placementMatches.map((match) => match.id));
+  const placementMatchById = new Map(placementMatches.map((match) => [match.id, match]));
+  const sourceMatches = matchRows.filter((match) =>
+    match.matchKind === 'championship'
+    && match.loserNextMatchId
+    && placementMatchIds.has(match.loserNextMatchId),
+  );
+  if (!sourceMatches.length || sourceMatches.some((match) =>
+    match.status !== 'completed'
+    || !match.teamAId
+    || !match.teamBId
+    || match.scoreA === null
+    || match.scoreB === null
+    || !match.loserToSlot)) {
+    throw new Error('Complete the championship source stage before editing this placement group.');
+  }
+  const sourceByLoserTeamId = new Map(sourceMatches.map((match) => {
+    const loserTeamId = match.scoreA! < match.scoreB! ? match.teamAId! : match.teamBId!;
+    return [loserTeamId, match] as const;
+  }));
+  const eligibleTeamIds = [...sourceByLoserTeamId.keys()].sort();
+  if (orderedTeamIds.length !== eligibleTeamIds.length
+    || new Set(orderedTeamIds).size !== orderedTeamIds.length
+    || [...orderedTeamIds].sort().join(',') !== eligibleTeamIds.join(',')) {
+    throw new Error('The requested teams must use the exact cohort of resolved losers.');
+  }
+  const destinations = sourceMatches
+    .map((match) => ({ nextMatchId: match.loserNextMatchId!, slot: match.loserToSlot as 'A' | 'B' }))
+    .sort((left, right) =>
+      (placementMatchById.get(left.nextMatchId)?.sequence ?? 0) - (placementMatchById.get(right.nextMatchId)?.sequence ?? 0)
+      || left.nextMatchId.localeCompare(right.nextMatchId)
+      || left.slot.localeCompare(right.slot),
+    );
+  return orderedTeamIds.map((teamId, index) => ({
+    sourceMatchId: sourceByLoserTeamId.get(teamId)!.id,
+    nextMatchId: destinations[index].nextMatchId,
+    slot: destinations[index].slot,
+    teamId,
+  }));
+}
+
 export function validateDraftFormatChange(status: string): void {
   if (status !== 'draft') throw new Error('Only a draft session can change competition format.');
 }
@@ -96,6 +159,35 @@ export interface KnockoutMatchPlan {
   sourceBKey: string | null;
   nextKey: string | null;
   winnerToSlot: 'A' | 'B' | null;
+}
+
+export type TournamentMatchKind = 'championship' | 'placement';
+
+export type TournamentSource =
+  | { kind: 'team'; teamIndex: number }
+  | { kind: 'outcome'; matchKey: string; outcome: 'winner' | 'loser' };
+
+export interface TournamentMatchPlan {
+  key: string;
+  matchKind: TournamentMatchKind;
+  round: number;
+  position: number;
+  placementGroup: number | null;
+  placementBestRank: number | null;
+  placementWorstRank: number | null;
+  sourceA: TournamentSource;
+  sourceB: TournamentSource;
+  winnerNextKey: string | null;
+  winnerToSlot: 'A' | 'B' | null;
+  loserNextKey: string | null;
+  loserToSlot: 'A' | 'B' | null;
+}
+
+export interface PlacementGroupPlan {
+  id: number;
+  bestRank: number;
+  worstRank: number;
+  entryMatchKeys: string[];
 }
 
 function bracketSeedOrder(size: number): number[] {
@@ -196,6 +288,166 @@ export function buildKnockoutDraw(teamCount: number, config: KnockoutConfig) {
       winnerToSlot: downstream.get(match.key)?.slot ?? null,
     })),
   };
+}
+
+function sourceForKnockoutSlot(
+  teamIndex: number | null,
+  sourceKey: string | null,
+  keyPrefix = '',
+): TournamentSource {
+  if (teamIndex !== null) return { kind: 'team', teamIndex };
+  if (sourceKey) return { kind: 'outcome', matchKey: `${keyPrefix}${sourceKey}`, outcome: 'winner' };
+  throw new Error('Every tournament slot requires a team or feeder match.');
+}
+
+function connectTournamentRoutes(matches: TournamentMatchPlan[]): void {
+  const byKey = new Map(matches.map((match) => [match.key, match]));
+  for (const match of matches) {
+    for (const [slot, source] of [['A', match.sourceA], ['B', match.sourceB]] as const) {
+      if (source.kind !== 'outcome') continue;
+      const feeder = byKey.get(source.matchKey);
+      if (!feeder) throw new Error(`Tournament feeder ${source.matchKey} does not exist.`);
+      if (source.outcome === 'winner') {
+        if (feeder.winnerNextKey) throw new Error(`Winner of ${source.matchKey} is routed more than once.`);
+        feeder.winnerNextKey = match.key;
+        feeder.winnerToSlot = slot;
+      } else {
+        if (feeder.loserNextKey) throw new Error(`Loser of ${source.matchKey} is routed more than once.`);
+        feeder.loserNextKey = match.key;
+        feeder.loserToSlot = slot;
+      }
+    }
+  }
+}
+
+function buildClassificationMatches(
+  entries: TournamentSource[],
+  group: PlacementGroupPlan,
+  keyPrefix: string,
+  firstDisplayRound: number,
+  positionByRound: Map<number, number>,
+): TournamentMatchPlan[] {
+  if (entries.length < 2) return [];
+
+  const localDraw = buildKnockoutDraw(entries.length, buildDefaultKnockoutConfig(entries.length));
+  const firstLocalRound = Math.min(...localDraw.matches.map((match) => match.round));
+  const localKey = (key: string) => `${keyPrefix}${key}`;
+  const localMatches = localDraw.matches.map((match): TournamentMatchPlan => {
+    const displayRound = firstDisplayRound + match.round - firstLocalRound;
+    const position = positionByRound.get(displayRound) ?? 0;
+    positionByRound.set(displayRound, position + 1);
+    const matchesInRound = localDraw.matches.filter((candidate) => candidate.round === match.round).length;
+    const exactFinal = matchesInRound === 1 && match.round === Math.max(...localDraw.matches.map((candidate) => candidate.round));
+    return {
+      key: localKey(match.key),
+      matchKind: 'placement',
+      round: displayRound,
+      position,
+      placementGroup: group.id,
+      placementBestRank: exactFinal ? group.bestRank : group.bestRank,
+      placementWorstRank: exactFinal ? Math.min(group.bestRank + 1, group.worstRank) : group.worstRank,
+      sourceA: match.teamAIndex !== null
+        ? entries[match.teamAIndex]
+        : sourceForKnockoutSlot(null, match.sourceAKey, keyPrefix),
+      sourceB: match.teamBIndex !== null
+        ? entries[match.teamBIndex]
+        : sourceForKnockoutSlot(null, match.sourceBKey, keyPrefix),
+      winnerNextKey: null,
+      winnerToSlot: null,
+      loserNextKey: null,
+      loserToSlot: null,
+    };
+  });
+
+  const lastRound = Math.max(...localDraw.matches.map((match) => match.round));
+  const mainSize = 2 ** Math.floor(Math.log2(entries.length));
+  const classificationMatches: TournamentMatchPlan[] = [];
+  for (const round of [...new Set(localDraw.matches.map((match) => match.round))].sort((a, b) => a - b)) {
+    if (round === lastRound) continue;
+    const roundMatches = localDraw.matches.filter((match) => match.round === round);
+    if (roundMatches.length < 2) continue;
+    const subBestRank = round === 0
+      ? group.bestRank + mainSize
+      : group.bestRank + roundMatches.length;
+    const subGroup = {
+      ...group,
+      bestRank: subBestRank,
+      worstRank: Math.min(group.worstRank, subBestRank + roundMatches.length - 1),
+    };
+    const sourceDisplayRound = firstDisplayRound + round - firstLocalRound;
+    classificationMatches.push(...buildClassificationMatches(
+      roundMatches.map((match) => ({ kind: 'outcome', matchKey: localKey(match.key), outcome: 'loser' as const })),
+      subGroup,
+      `${keyPrefix}class-${round}-`,
+      sourceDisplayRound + 1,
+      positionByRound,
+    ));
+  }
+  return [...localMatches, ...classificationMatches];
+}
+
+export function buildKnockoutTournament(teamCount: number, config: KnockoutConfig) {
+  const draw = buildKnockoutDraw(teamCount, config);
+  const championship: TournamentMatchPlan[] = draw.matches.map((match) => ({
+    key: match.key,
+    matchKind: 'championship',
+    round: match.round,
+    position: match.position,
+    placementGroup: null,
+    placementBestRank: null,
+    placementWorstRank: null,
+    sourceA: sourceForKnockoutSlot(match.teamAIndex, match.sourceAKey),
+    sourceB: sourceForKnockoutSlot(match.teamBIndex, match.sourceBKey),
+    winnerNextKey: null,
+    winnerToSlot: null,
+    loserNextKey: null,
+    loserToSlot: null,
+  }));
+
+  const rounds = [...new Set(draw.matches.map((match) => match.round))].sort((a, b) => b - a);
+  const finalRound = Math.max(...rounds);
+  const mainSize = 2 ** Math.floor(Math.log2(teamCount));
+  const cohorts: Array<{ bestRank: number; worstRank: number; entryMatchKeys: string[] }> = [];
+  const preliminaryMatches = draw.matches.filter((match) => match.round === 0);
+  let singletonPreliminary: string | null = preliminaryMatches.length === 1 ? preliminaryMatches[0].key : null;
+  for (const round of rounds) {
+    if (round === finalRound) continue;
+    const roundMatches = draw.matches.filter((match) => match.round === round);
+    if (round === 0 && roundMatches.length === 1) {
+      continue;
+    }
+    const entryMatchKeys = roundMatches.map((match) => match.key);
+    let worstRank = round === 0 ? teamCount : roundMatches.length * 2;
+    if (singletonPreliminary && round === 1) {
+      entryMatchKeys.push(singletonPreliminary);
+      worstRank = teamCount;
+      singletonPreliminary = null;
+    }
+    if (entryMatchKeys.length >= 2) {
+      cohorts.push({
+        bestRank: round === 0 ? mainSize + 1 : roundMatches.length + 1,
+        worstRank,
+        entryMatchKeys,
+      });
+    }
+  }
+  cohorts.sort((left, right) => left.bestRank - right.bestRank);
+
+  const placementGroups: PlacementGroupPlan[] = cohorts.map((cohort, index) => ({ id: index + 1, ...cohort }));
+  const placementMatches: TournamentMatchPlan[] = [];
+  for (const group of placementGroups) {
+    placementMatches.push(...buildClassificationMatches(
+      group.entryMatchKeys.map((matchKey) => ({ kind: 'outcome', matchKey, outcome: 'loser' as const })),
+      group,
+      `placement-${group.id}-`,
+      0,
+      new Map(),
+    ));
+  }
+
+  const matches = [...championship, ...placementMatches];
+  connectTournamentRoutes(matches);
+  return { matches, placementGroups };
 }
 
 export function buildQualifyingKnockoutMatches(teamCount: number, config?: QualifyingKnockoutConfig): DrawMatch[] {
@@ -326,6 +578,26 @@ export function validateWinnerAdvancement(
   if (downstreamScored && currentWinnerTeamId !== nextWinnerTeamId) {
     throw new Error('The downstream match is already scored. Return to attendance before changing this winner.');
   }
+}
+
+export function validateOutcomeAdvancement(input: {
+  currentWinnerTeamId: string | null;
+  nextWinnerTeamId: string;
+  winnerDownstreamScored: boolean;
+  currentLoserTeamId: string | null;
+  nextLoserTeamId: string;
+  loserDownstreamScored: boolean;
+}): void {
+  validateWinnerAdvancement(
+    input.currentWinnerTeamId,
+    input.nextWinnerTeamId,
+    input.winnerDownstreamScored,
+  );
+  validateWinnerAdvancement(
+    input.currentLoserTeamId,
+    input.nextLoserTeamId,
+    input.loserDownstreamScored,
+  );
 }
 
 function buildMatches(teamCount: number): DrawMatch[] {

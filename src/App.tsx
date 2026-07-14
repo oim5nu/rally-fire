@@ -28,6 +28,10 @@ interface PublicState {
       status: 'pending' | 'in_progress' | 'completed';
       bracketRound: number | null;
       bracketPosition: number | null;
+      matchKind: 'round_robin' | 'qualifier' | 'championship' | 'placement';
+      placementGroup: number | null;
+      placementBestRank: number | null;
+      placementWorstRank: number | null;
     }>;
   };
 }

@@ -3,7 +3,7 @@ import useSWR from 'swr';
 import { adminRequest, ApiError } from '../lib/api';
 import DateTimePicker from './DateTimePicker';
 import { useActivity } from '../lib/activity';
-import KnockoutBracket from './KnockoutBracket';
+import KnockoutBracket, { placementGroupLabel } from './KnockoutBracket';
 
 interface Membership {
   id: string;
@@ -32,6 +32,12 @@ interface AdminMatch {
   status: 'pending' | 'in_progress' | 'completed';
   bracketRound: number | null;
   bracketPosition: number | null;
+  matchKind?: 'round_robin' | 'qualifier' | 'championship' | 'placement';
+  placementGroup?: number | null;
+  placementBestRank?: number | null;
+  placementWorstRank?: number | null;
+  loserNextMatchId?: string | null;
+  loserToSlot?: 'A' | 'B' | null;
 }
 
 interface AdminSession {
@@ -143,6 +149,13 @@ export function buildReturnToQuarterFinalConfigRequest(sessionId: string): Reque
   };
 }
 
+export function buildPlacementRepairRequest(sessionId: string, placementGroup: number, teamIds: string[]): RequestInit {
+  return {
+    method: 'POST',
+    body: JSON.stringify({ action: 're_pair_placement', sessionId, placementGroup, teamIds }),
+  };
+}
+
 function MatchScoreRow({
   match,
   session,
@@ -214,6 +227,83 @@ function MatchScoreRow({
       </div>
       {error && <p role="alert" className="text-xs text-red-300 lg:col-span-4">{error}</p>}
     </form>
+  );
+}
+
+function PlacementPairingControls({
+  session,
+  groups,
+  onSaved,
+}: {
+  session: AdminSession;
+  groups: ReturnType<typeof getEditablePlacementGroups>;
+  onSaved: () => Promise<void>;
+}) {
+  const [editingGroup, setEditingGroup] = useState<number | null>(null);
+  const [teamIds, setTeamIds] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const group = groups.find((candidate) => candidate.placementGroup === editingGroup);
+
+  function teamName(teamId: string) {
+    const team = session.teams.find((candidate) => candidate.id === teamId);
+    return team ? `#${team.seed} ${team.members.map((member) => member.name).join(' / ')}` : 'Unknown team';
+  }
+
+  if (!groups.length) return null;
+  if (!group) {
+    return (
+      <div className="flex flex-wrap gap-2" aria-label="Placement pairing controls">
+        {groups.map((candidate) => (
+          <button
+            key={candidate.placementGroup}
+            type="button"
+            onClick={() => { setEditingGroup(candidate.placementGroup); setTeamIds(candidate.teamIds); setError(''); }}
+            className="rounded-lg border border-tertiary-fixed/50 bg-tertiary-fixed/10 px-3 py-2 text-xs font-black text-tertiary-fixed transition-colors hover:bg-tertiary-fixed/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-tertiary-fixed"
+          >
+            Edit {placementGroupLabel(candidate.bestRank, candidate.worstRank)} pairings
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  const valid = teamIds.length === group.teamIds.length && new Set(teamIds).size === teamIds.length;
+  async function save() {
+    setBusy(true);
+    setError('');
+    try {
+      await adminRequest('/api/admin/sessions', buildPlacementRepairRequest(session.id, group.placementGroup, teamIds));
+      await onSaved();
+      setEditingGroup(null);
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-tertiary-fixed/35 bg-tertiary-fixed/10 p-3" aria-label={`Edit ${placementGroupLabel(group.bestRank, group.worstRank)} pairings`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><h3 className="text-xs font-black uppercase tracking-wider text-tertiary-fixed">Edit placement pairings</h3><p className="mt-1 text-xs text-on-surface-variant">Reorder only this resolved loser cohort before its first score is saved.</p></div>
+        <div className="flex gap-2">
+          <button type="button" disabled={busy} onClick={() => setEditingGroup(null)} className="rounded-lg border border-outline-variant px-3 py-2 text-xs font-bold text-white disabled:opacity-50">Cancel</button>
+          <button type="button" disabled={busy || !valid} onClick={() => void save()} className="rounded-lg bg-tertiary-fixed px-3 py-2 text-xs font-black text-on-tertiary-fixed disabled:opacity-40">Save pairings</button>
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {teamIds.map((teamId, index) => (
+          <label key={index} className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Entry slot {index + 1}
+            <select value={teamId} disabled={busy} onChange={(event) => setTeamIds((current) => current.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry))} className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container px-3 py-2 text-xs font-normal normal-case text-white">
+              {group.teamIds.map((candidateTeamId) => <option key={candidateTeamId} value={candidateTeamId}>{teamName(candidateTeamId)}</option>)}
+            </select>
+          </label>
+        ))}
+      </div>
+      {!valid && <p className="mt-2 text-xs text-red-300">Use every eligible team exactly once.</p>}
+      {error && <p role="alert" className="mt-2 text-xs text-red-300">{error}</p>}
+    </section>
   );
 }
 
@@ -413,12 +503,44 @@ export function buildQualifyingStandings(
 }
 
 export function splitQualifyingKnockoutMatches(matches: AdminSession['matches']) {
-  const nonBracketMatches = matches.filter((match) => match.bracketRound === null);
+  const legacyNonBracketMatches = matches.filter((match) => !match.matchKind && match.bracketRound === null);
   return {
-    qualifierMatches: nonBracketMatches.slice(0, 5),
-    consolationMatches: nonBracketMatches.slice(5),
-    bracketMatches: matches.filter((match) => match.bracketRound !== null),
+    qualifierMatches: [
+      ...matches.filter((match) => match.matchKind === 'qualifier'),
+      ...legacyNonBracketMatches.slice(0, 5),
+    ].sort((left, right) => left.sequence - right.sequence),
+    consolationMatches: [
+      ...matches.filter((match) => match.matchKind === 'placement' && match.placementBestRank === 9),
+      ...legacyNonBracketMatches.slice(5),
+    ].sort((left, right) => left.sequence - right.sequence),
+    bracketMatches: matches.filter((match) => match.matchKind === 'championship' || (!match.matchKind && match.bracketRound !== null)),
   };
+}
+
+export function getEditablePlacementGroups(matches: AdminSession['matches']) {
+  const groups = new Map<number, AdminMatch[]>();
+  for (const match of matches) {
+    if (match.matchKind !== 'placement' || match.placementGroup === null || match.placementGroup === undefined) continue;
+    groups.set(match.placementGroup, [...(groups.get(match.placementGroup) ?? []), match]);
+  }
+  return [...groups.entries()].sort(([left], [right]) => left - right).flatMap(([placementGroup, groupMatches]) => {
+    if (groupMatches.some((match) => match.status !== 'pending')) return [];
+    const bestRank = Math.min(...groupMatches.map((match) => match.placementBestRank ?? Number.POSITIVE_INFINITY));
+    const worstRank = Math.max(...groupMatches.map((match) => match.placementWorstRank ?? 0));
+    const groupMatchIds = new Set(groupMatches.map((match) => match.id));
+    const groupMatchById = new Map(groupMatches.map((match) => [match.id, match]));
+    const sourceMatches = matches
+      .filter((match) => match.matchKind === 'championship' && match.loserNextMatchId && groupMatchIds.has(match.loserNextMatchId))
+      .sort((left, right) =>
+        (groupMatchById.get(left.loserNextMatchId!)?.sequence ?? 0) - (groupMatchById.get(right.loserNextMatchId!)?.sequence ?? 0)
+        || (left.loserToSlot ?? '').localeCompare(right.loserToSlot ?? ''),
+      );
+    if (!Number.isFinite(bestRank)
+      || sourceMatches.length !== worstRank - bestRank + 1
+      || sourceMatches.some((match) => match.status !== 'completed' || !match.teamAId || !match.teamBId || match.scoreA === null || match.scoreB === null || !match.loserToSlot)) return [];
+    const teamIds = sourceMatches.map((match) => match.scoreA! < match.scoreB! ? match.teamAId! : match.teamBId!);
+    return [{ placementGroup, bestRank, worstRank, teamIds }];
+  });
 }
 
 export function shouldShowQuarterFinalConfigReturn(format: AdminSession['format'], matches: AdminSession['matches']) {
@@ -496,6 +618,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const qualifyingConsolationTeams = validQuarterFinalSelection
     ? getQuarterFinalPlayoffTeams(qualifyingStandings, quarterFinalTeamIds)
     : getQualifyingConsolationTeams(qualifyingStandings);
+  const editablePlacementGroups = session ? getEditablePlacementGroups(session.matches) : [];
   const validQualifyingMatchSetup = session?.format !== 'qualifying_knockout'
     || isValidQualifyingMatchSetup(manualPairs.length, qualifyingMatchSetup);
   const qualifiersComplete = session?.format === 'qualifying_knockout'
@@ -1025,7 +1148,10 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                 <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">Live · {formatName(session.format)}</p><h2 className="mt-1 text-xl font-black text-white">{session.name}</h2><p className="text-sm text-on-surface-variant">Scores save immediately to the public view. Ties are not accepted.</p></div>
                 <button type="button" disabled={busy} onClick={returnToAttendance} className="w-fit text-xs font-bold text-red-300 underline disabled:opacity-50">Return to attendance</button>
                 {session.format === 'knockout' ? (
-                  <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                  <div className="space-y-3">
+                    <PlacementPairingControls session={session} groups={editablePlacementGroups} onSaved={async () => { await mutateSession(); onDataChanged(); }} />
+                    <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                  </div>
                 ) : session.format === 'qualifying_knockout' ? (
                   <div className="space-y-4">
                     <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
@@ -1045,7 +1171,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                         </div>
                       </div>
                     )}
-                    {qualifyingConsolationTeams.length === 2 && (
+                    {qualifyingConsolationTeams.length === 2 && consolationMatches.length === 0 && (
                       <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
                         <div><h3 className="text-sm font-black text-white">Eliminated pair playoff</h3><p className="mt-1 text-xs text-on-surface-variant">The two eliminated pairs can still play and record their score after the knockout bracket starts.</p></div>
                         {consolationMatches.length > 0 ? (
@@ -1064,6 +1190,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                         {canReturnToQuarterFinalConfig && (
                           <button type="button" disabled={busy} onClick={returnToQuarterFinalConfig} className="w-fit rounded-lg border border-red-300 px-4 py-2 text-xs font-black text-red-300 disabled:opacity-50">Return to quarter-final configuration</button>
                         )}
+                        <PlacementPairingControls session={session} groups={editablePlacementGroups} onSaved={async () => { await mutateSession(); onDataChanged(); }} />
                         <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
                       </div>
                     ) : qualifyingBracketPending ? (

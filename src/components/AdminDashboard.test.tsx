@@ -4,6 +4,7 @@ import {
   buildArchiveSeasonRequest,
   buildBulkPointAdjustmentPayload,
   buildReturnToQuarterFinalConfigRequest,
+  buildPlacementRepairRequest,
   buildQualifyingStandings,
   buildManualPairPayload,
   countAttendeeGroups,
@@ -15,6 +16,7 @@ import {
   getAvailableQuarterFinalTeamIds,
   getQuarterFinalPlayoffTeams,
   getQualifyingConsolationTeams,
+  getEditablePlacementGroups,
   isValidQuarterFinalTeamSelection,
   isValidQualifyingMatchSetup,
   isValidKnockoutSetup,
@@ -97,6 +99,35 @@ describe('knockout setup', () => {
       ...setup,
       mainSources: setup.mainSources.map((source, index) => index === 1 ? setup.mainSources[0] : source),
     })).toBe(false);
+  });
+});
+
+describe('placement pairing editor', () => {
+  const placementMatches = [
+    { id: 'c1', sequence: 1, teamAId: 'team-1', teamBId: 'team-8', scoreA: 11, scoreB: 7, court: null, status: 'completed' as const, bracketRound: 1, bracketPosition: 0, matchKind: 'championship' as const, placementGroup: null, placementBestRank: null, placementWorstRank: null, loserNextMatchId: 'p1', loserToSlot: 'A' as const },
+    { id: 'c2', sequence: 2, teamAId: 'team-4', teamBId: 'team-5', scoreA: 8, scoreB: 11, court: null, status: 'completed' as const, bracketRound: 1, bracketPosition: 1, matchKind: 'championship' as const, placementGroup: null, placementBestRank: null, placementWorstRank: null, loserNextMatchId: 'p1', loserToSlot: 'B' as const },
+    { id: 'c3', sequence: 3, teamAId: 'team-2', teamBId: 'team-7', scoreA: 11, scoreB: 6, court: null, status: 'completed' as const, bracketRound: 1, bracketPosition: 2, matchKind: 'championship' as const, placementGroup: null, placementBestRank: null, placementWorstRank: null, loserNextMatchId: 'p2', loserToSlot: 'A' as const },
+    { id: 'c4', sequence: 4, teamAId: 'team-3', teamBId: 'team-6', scoreA: 11, scoreB: 9, court: null, status: 'completed' as const, bracketRound: 1, bracketPosition: 3, matchKind: 'championship' as const, placementGroup: null, placementBestRank: null, placementWorstRank: null, loserNextMatchId: 'p2', loserToSlot: 'B' as const },
+    { id: 'p1', sequence: 8, teamAId: 'team-8', teamBId: 'team-4', scoreA: null, scoreB: null, court: null, status: 'pending' as const, bracketRound: 0, bracketPosition: 0, matchKind: 'placement' as const, placementGroup: 2, placementBestRank: 5, placementWorstRank: 8 },
+    { id: 'p2', sequence: 9, teamAId: 'team-7', teamBId: 'team-6', scoreA: null, scoreB: null, court: null, status: 'pending' as const, bracketRound: 0, bracketPosition: 1, matchKind: 'placement' as const, placementGroup: 2, placementBestRank: 5, placementWorstRank: 8 },
+  ];
+
+  it('offers a resolved unscored cohort and builds its API request', () => {
+    expect(getEditablePlacementGroups(placementMatches)).toEqual([
+      { placementGroup: 2, bestRank: 5, worstRank: 8, teamIds: ['team-8', 'team-4', 'team-7', 'team-6'] },
+    ]);
+    expect(buildPlacementRepairRequest('session-1', 2, ['team-4', 'team-8'])).toEqual({
+      method: 'POST',
+      body: JSON.stringify({ action: 're_pair_placement', sessionId: 'session-1', placementGroup: 2, teamIds: ['team-4', 'team-8'] }),
+    });
+  });
+
+  it('hides a cohort after placement scoring starts', () => {
+    expect(getEditablePlacementGroups(placementMatches.map((match) => match.id === 'p1' ? { ...match, status: 'completed' as const } : match))).toEqual([]);
+  });
+
+  it('does not offer a direct placement match without championship loser routes', () => {
+    expect(getEditablePlacementGroups(placementMatches.filter((match) => match.matchKind === 'placement'))).toEqual([]);
   });
 });
 

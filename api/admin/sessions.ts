@@ -21,10 +21,11 @@ import {
 import {
   buildConfiguredDraw,
   buildQualifyingKnockoutMatches,
-  buildKnockoutDraw,
+  buildKnockoutTournament,
   buildDrawPersistenceRows,
   calculateMatchAwards,
   planAttendanceRollback,
+  planPlacementRepair,
   planQuarterFinalConfigReturn,
   rankQualifyingTeams,
   resolveQualifyingKnockoutTeams,
@@ -90,6 +91,12 @@ const actionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('finalize'), sessionId: z.uuid() }),
   z.object({ action: z.literal('return_to_attendance'), sessionId: z.uuid() }),
   z.object({ action: z.literal('return_to_quarter_final_config'), sessionId: z.uuid() }),
+  z.object({
+    action: z.literal('re_pair_placement'),
+    sessionId: z.uuid(),
+    placementGroup: z.number().int().positive(),
+    teamIds: z.array(z.uuid()).min(2),
+  }),
   z.object({
     action: z.literal('set_format'),
     sessionId: z.uuid(),
@@ -345,7 +352,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           ),
         );
       let draw;
-      let knockout: ReturnType<typeof buildKnockoutDraw> | null = null;
+      let knockout: ReturnType<typeof buildKnockoutTournament> | null = null;
       try {
         if (attendees.some((player) => !player.group)) {
           throw new Error('Every attendee must have an explicit A or B group before pairing.');
@@ -358,7 +365,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           throw new Error('Knockout bracket configuration is required.');
         }
         knockout = session.format === 'knockout'
-          ? buildKnockoutDraw(draw.teams.length, input.knockoutConfig as KnockoutConfig)
+          ? buildKnockoutTournament(draw.teams.length, input.knockoutConfig as KnockoutConfig)
           : null;
         if (session.format === 'qualifying_knockout') {
           draw = {
@@ -410,18 +417,25 @@ export default async function handler(request: VercelRequest, response: VercelRe
             id: matchIds.get(match.key)!,
             sessionId: session.id,
             sequence: index + 1,
-            teamAId: match.teamAIndex === null ? null : teamsByIndex.get(match.teamAIndex)!.id,
-            teamBId: match.teamBIndex === null ? null : teamsByIndex.get(match.teamBIndex)!.id,
+            matchKind: match.matchKind,
+            teamAId: match.sourceA.kind === 'team' ? teamsByIndex.get(match.sourceA.teamIndex)!.id : null,
+            teamBId: match.sourceB.kind === 'team' ? teamsByIndex.get(match.sourceB.teamIndex)!.id : null,
             bracketRound: match.round,
             bracketPosition: match.position,
-            nextMatchId: match.nextKey ? matchIds.get(match.nextKey)! : null,
+            placementGroup: match.placementGroup,
+            placementBestRank: match.placementBestRank,
+            placementWorstRank: match.placementWorstRank,
+            nextMatchId: match.winnerNextKey ? matchIds.get(match.winnerNextKey)! : null,
             winnerToSlot: match.winnerToSlot,
+            loserNextMatchId: match.loserNextKey ? matchIds.get(match.loserNextKey)! : null,
+            loserToSlot: match.loserToSlot,
           })));
         } else {
           await transaction.insert(matches).values(
             drawRows.matches.map((match) => ({
               sessionId: session.id,
               sequence: match.sequence,
+              matchKind: session.format === 'qualifying_knockout' ? 'qualifier' as const : 'round_robin' as const,
               teamAId: teamsByIndex.get(match.teamAIndex)!.id,
               teamBId: teamsByIndex.get(match.teamBIndex)!.id,
             })),
@@ -462,8 +476,8 @@ export default async function handler(request: VercelRequest, response: VercelRe
         database.select().from(teams).where(eq(teams.sessionId, session.id)).orderBy(teams.seed),
         database.select().from(matches).where(eq(matches.sessionId, session.id)).orderBy(matches.sequence),
       ]);
-      const qualifierMatches = matchRows.filter((match) => match.bracketRound === null);
-      const bracketMatches = matchRows.filter((match) => match.bracketRound !== null);
+      const qualifierMatches = matchRows.filter((match) => match.matchKind === 'qualifier');
+      const bracketMatches = matchRows.filter((match) => match.matchKind === 'championship');
       if (bracketMatches.length) {
         sendJson(response, 409, { error: 'knockout_already_started' });
         return;
@@ -502,7 +516,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
         ]));
         const teamSelection = resolveQualifyingKnockoutTeams(standings, input.quarterFinalTeamIds);
         quarterFinalTeamIds = teamSelection.quarterFinalTeamIds;
-        knockout = buildKnockoutDraw(8, input.knockoutConfig as KnockoutConfig);
+        knockout = buildKnockoutTournament(8, input.knockoutConfig as KnockoutConfig);
         consolationMatch = {
           teamAId: teamSelection.consolationTeamIds[0],
           teamBId: teamSelection.consolationTeamIds[1],
@@ -522,16 +536,28 @@ export default async function handler(request: VercelRequest, response: VercelRe
           id: matchIds.get(match.key)!,
           sessionId: session.id,
           sequence: sequenceOffset + index + 1,
-          teamAId: match.teamAIndex === null ? null : quarterFinalTeamIds[match.teamAIndex],
-          teamBId: match.teamBIndex === null ? null : quarterFinalTeamIds[match.teamBIndex],
+          matchKind: match.matchKind,
+          teamAId: match.sourceA.kind === 'team' ? quarterFinalTeamIds[match.sourceA.teamIndex] : null,
+          teamBId: match.sourceB.kind === 'team' ? quarterFinalTeamIds[match.sourceB.teamIndex] : null,
           bracketRound: match.round,
           bracketPosition: match.position,
-          nextMatchId: match.nextKey ? matchIds.get(match.nextKey)! : null,
+          placementGroup: match.placementGroup,
+          placementBestRank: match.placementBestRank,
+          placementWorstRank: match.placementWorstRank,
+          nextMatchId: match.winnerNextKey ? matchIds.get(match.winnerNextKey)! : null,
           winnerToSlot: match.winnerToSlot,
+          loserNextMatchId: match.loserNextKey ? matchIds.get(match.loserNextKey)! : null,
+          loserToSlot: match.loserToSlot,
         })));
         await transaction.insert(matches).values({
           sessionId: session.id,
           sequence: consolationMatch.sequence,
+          matchKind: 'placement',
+          placementGroup: knockout.placementGroups.length + 1,
+          placementBestRank: 9,
+          placementWorstRank: 10,
+          bracketRound: 0,
+          bracketPosition: 0,
           teamAId: consolationMatch.teamAId,
           teamBId: consolationMatch.teamBId,
         });
@@ -552,6 +578,73 @@ export default async function handler(request: VercelRequest, response: VercelRe
         });
       });
       sendJson(response, 200, { session: await getSessionDetail(session.id) });
+      return;
+    }
+
+    if (input.action === 're_pair_placement') {
+      const result = await database.transaction(async (transaction) => {
+        const [session] = await transaction
+          .select()
+          .from(playSessions)
+          .where(eq(playSessions.id, input.sessionId))
+          .for('update')
+          .limit(1);
+        if (!session
+          || !['knockout', 'qualifying_knockout'].includes(session.format)
+          || !['draw_published', 'in_progress'].includes(session.status)) {
+          return { error: 'placement_group_unavailable' as const };
+        }
+        const matchRows = await transaction
+          .select()
+          .from(matches)
+          .where(eq(matches.sessionId, session.id))
+          .orderBy(matches.sequence)
+          .for('update');
+        let repairPlan;
+        try {
+          repairPlan = planPlacementRepair(matchRows, input.placementGroup, input.teamIds);
+        } catch (error) {
+          return {
+            error: 'placement_pairing_invalid' as const,
+            message: error instanceof Error ? error.message : 'The placement pairing is invalid.',
+          };
+        }
+        const sourceMatchIds = repairPlan.map((assignment) => assignment.sourceMatchId);
+        const targetMatchIds: string[] = [...new Set<string>(repairPlan.map((assignment) => assignment.nextMatchId))];
+        await transaction
+          .update(matches)
+          .set({ loserNextMatchId: null, loserToSlot: null })
+          .where(inArray(matches.id, sourceMatchIds));
+        for (const targetMatchId of targetMatchIds) {
+          await transaction
+            .update(matches)
+            .set({ teamAId: null, teamBId: null })
+            .where(eq(matches.id, targetMatchId));
+        }
+        for (const assignment of repairPlan) {
+          await transaction
+            .update(matches)
+            .set({ loserNextMatchId: assignment.nextMatchId, loserToSlot: assignment.slot })
+            .where(eq(matches.id, assignment.sourceMatchId));
+          await transaction
+            .update(matches)
+            .set(assignment.slot === 'A' ? { teamAId: assignment.teamId } : { teamBId: assignment.teamId })
+            .where(eq(matches.id, assignment.nextMatchId));
+        }
+        await transaction.insert(auditLog).values({
+          actorMembershipId: admin.membership.id,
+          action: 'session.placement_repaired',
+          entityType: 'play_session',
+          entityId: session.id,
+          details: { placementGroup: input.placementGroup, teamIds: input.teamIds },
+        });
+        return { sessionId: session.id };
+      }, { isolationLevel: 'serializable' });
+      if ('error' in result) {
+        sendJson(response, 409, result);
+        return;
+      }
+      sendJson(response, 200, { session: await getSessionDetail(result.sessionId) });
       return;
     }
 
@@ -581,25 +674,44 @@ export default async function handler(request: VercelRequest, response: VercelRe
         return;
       }
       const winnerTeamId = score.scoreA > score.scoreB ? match.match.teamAId : match.match.teamBId;
+      const loserTeamId = score.scoreA > score.scoreB ? match.match.teamBId : match.match.teamAId;
       const scoreResult = await database.transaction(async (transaction) => {
-        if (match.match.nextMatchId && match.match.winnerToSlot) {
+        const routes = [
+          {
+            nextMatchId: match.match.nextMatchId,
+            slot: match.match.winnerToSlot,
+            teamId: winnerTeamId,
+          },
+          {
+            nextMatchId: match.match.loserNextMatchId,
+            slot: match.match.loserToSlot,
+            teamId: loserTeamId,
+          },
+        ].filter((route): route is { nextMatchId: string; slot: 'A' | 'B'; teamId: string } => Boolean(route.nextMatchId && route.slot));
+        const downstreamMatches = [];
+        for (const route of routes) {
           const [nextMatch] = await transaction
             .select()
             .from(matches)
-            .where(eq(matches.id, match.match.nextMatchId))
+            .where(eq(matches.id, route.nextMatchId))
             .for('update')
             .limit(1);
           if (!nextMatch) return { error: 'knockout_path_invalid' as const };
-          const currentWinner = match.match.winnerToSlot === 'A' ? nextMatch.teamAId : nextMatch.teamBId;
+          downstreamMatches.push({ route, nextMatch });
+        }
+        for (const { route, nextMatch } of downstreamMatches) {
+          const currentTeam = route.slot === 'A' ? nextMatch.teamAId : nextMatch.teamBId;
           const downstreamScored = nextMatch.scoreA !== null || nextMatch.scoreB !== null;
           try {
-            validateWinnerAdvancement(currentWinner, winnerTeamId, downstreamScored);
+            validateWinnerAdvancement(currentTeam, route.teamId, downstreamScored);
           } catch {
             return { error: 'downstream_match_already_scored' as const };
           }
+        }
+        for (const { route, nextMatch } of downstreamMatches) {
           await transaction
             .update(matches)
-            .set(match.match.winnerToSlot === 'A' ? { teamAId: winnerTeamId } : { teamBId: winnerTeamId })
+            .set(route.slot === 'A' ? { teamAId: route.teamId } : { teamBId: route.teamId })
             .where(eq(matches.id, nextMatch.id));
         }
         await transaction
