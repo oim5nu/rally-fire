@@ -23,6 +23,8 @@ export interface BracketMatch {
   placementWorstRank?: number | null;
 }
 
+export type BracketStageActionRenderer = (matches: BracketMatch[], label: string) => ReactNode;
+
 export function bracketStageLabel(round: number, matchCount: number): string {
   if (round === 0) return 'Preliminary';
   if (matchCount === 1) return 'Final';
@@ -121,12 +123,14 @@ function BracketSection({
   title,
   showChampion,
   renderMatch,
+  renderStageAction,
 }: {
   teams: BracketTeam[];
   matches: BracketMatch[];
   title: string;
   showChampion: boolean;
   renderMatch?: (match: BracketMatch, teamA?: BracketTeam, teamB?: BracketTeam) => ReactNode;
+  renderStageAction?: BracketStageActionRenderer;
 }) {
   const teamMap = new Map(teams.map((team) => [team.id, team]));
   const stages = groupKnockoutStages(matches);
@@ -143,20 +147,34 @@ function BracketSection({
         <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white">{title}</h3>
       </div>
       <div className="flex min-w-max items-stretch gap-6">
-        {stages.map((stage) => (
-          <section key={stage.round} className="flex w-72 flex-col" aria-labelledby={`${title.replace(/\W+/g, '-').toLowerCase()}-${stage.round}`}>
-            <h4 id={`${title.replace(/\W+/g, '-').toLowerCase()}-${stage.round}`} className="mb-4 border-b border-primary-fixed/30 pb-2 text-xs font-black uppercase tracking-[0.18em] text-primary-fixed">
-              {showChampion ? bracketStageLabel(stage.round, stage.matches.length) : `Placement round ${stage.round + 1}`}
-            </h4>
-            <div className="flex flex-1 flex-col justify-around gap-6 py-2">
-              {stage.matches.map((match) => {
-                const teamA = match.teamAId ? teamMap.get(match.teamAId) : undefined;
-                const teamB = match.teamBId ? teamMap.get(match.teamBId) : undefined;
-                return <div key={match.id} className="relative after:absolute after:left-full after:top-1/2 after:h-px after:w-6 after:bg-outline-variant/35">{renderMatch?.(match, teamA, teamB) ?? <ReadonlyMatchCard match={match} teamA={teamA} teamB={teamB} />}</div>;
-              })}
-            </div>
-          </section>
-        ))}
+        {stages.map((stage) => {
+          const headingId = `${title.replace(/\W+/g, '-').toLowerCase()}-${stage.round}`;
+          const stageLabel = showChampion ? bracketStageLabel(stage.round, stage.matches.length) : `Placement round ${stage.round + 1}`;
+          const actionLabel = showChampion ? stageLabel : `${title} · ${stageLabel}`;
+          return (
+            <section key={stage.round} className="flex w-72 flex-col" aria-labelledby={headingId}>
+              {renderStageAction ? (
+                <div className="mb-4 flex flex-wrap items-start gap-2 border-b border-primary-fixed/30 pb-2">
+                  <h4 id={headingId} className="min-w-0 flex-1 pt-2 text-xs font-black uppercase tracking-[0.18em] text-primary-fixed">
+                    {stageLabel}
+                  </h4>
+                  {renderStageAction(stage.matches, actionLabel)}
+                </div>
+              ) : (
+                <h4 id={headingId} className="mb-4 border-b border-primary-fixed/30 pb-2 text-xs font-black uppercase tracking-[0.18em] text-primary-fixed">
+                  {stageLabel}
+                </h4>
+              )}
+              <div className="flex flex-1 flex-col justify-around gap-6 py-2">
+                {stage.matches.map((match) => {
+                  const teamA = match.teamAId ? teamMap.get(match.teamAId) : undefined;
+                  const teamB = match.teamBId ? teamMap.get(match.teamBId) : undefined;
+                  return <div key={match.id} className="relative after:absolute after:left-full after:top-1/2 after:h-px after:w-6 after:bg-outline-variant/35">{renderMatch?.(match, teamA, teamB) ?? <ReadonlyMatchCard match={match} teamA={teamA} teamB={teamB} />}</div>;
+                })}
+              </div>
+            </section>
+          );
+        })}
         {showChampion && (
           <section className="flex w-56 flex-col" aria-labelledby="knockout-champion">
             <h4 id="knockout-champion" className="mb-4 border-b border-primary-fixed/30 pb-2 text-xs font-black uppercase tracking-[0.18em] text-primary-fixed">Champion</h4>
@@ -177,16 +195,18 @@ export default function KnockoutBracket({
   teams,
   matches,
   renderMatch,
+  renderStageAction,
 }: {
   teams: BracketTeam[];
   matches: BracketMatch[];
   renderMatch?: (match: BracketMatch, teamA?: BracketTeam, teamB?: BracketTeam) => ReactNode;
+  renderStageAction?: BracketStageActionRenderer;
 }) {
   const tournament = groupTournamentBrackets(matches);
 
   return (
     <div className="space-y-4">
-      <BracketSection teams={teams} matches={tournament.championship} title="Championship bracket" showChampion renderMatch={renderMatch} />
+      <BracketSection teams={teams} matches={tournament.championship} title="Championship bracket" showChampion renderMatch={renderMatch} renderStageAction={renderStageAction} />
       {tournament.placements.map((group) => (
         <BracketSection
           key={group.id}
@@ -195,6 +215,7 @@ export default function KnockoutBracket({
           title={placementGroupLabel(group.bestRank ?? 1, group.worstRank)}
           showChampion={false}
           renderMatch={renderMatch}
+          renderStageAction={renderStageAction}
         />
       ))}
     </div>

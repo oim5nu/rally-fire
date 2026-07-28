@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 import KnockoutBracket, { bracketStageLabel, groupKnockoutStages, groupTournamentBrackets, placementGroupLabel } from './KnockoutBracket';
+
+afterEach(cleanup);
 
 describe('knockout bracket presentation', () => {
   it('groups matches into ordered stage columns', () => {
@@ -59,5 +61,27 @@ describe('knockout bracket presentation', () => {
 
     expect(screen.getByRole('region', { name: 'Championship bracket' })).toBeTruthy();
     expect(screen.getByRole('region', { name: '3rd / 4th place' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /adjust/i })).toBeNull();
+  });
+
+  it('optionally renders an action beside each stage heading with its matches and human label', () => {
+    const teams = [
+      { id: 'team-1', seed: 1, members: [{ name: 'Alpha' }] },
+      { id: 'team-2', seed: 2, members: [{ name: 'Beta' }] },
+    ];
+    const base = { sequence: 1, teamAId: 'team-1', teamBId: 'team-2', scoreA: null, scoreB: null, court: null, status: 'pending' as const, bracketRound: 0, bracketPosition: 0 };
+    const main = { ...base, id: 'main', matchKind: 'championship' as const, placementGroup: null, placementBestRank: null, placementWorstRank: null };
+    const placement = { ...base, id: 'third', sequence: 2, matchKind: 'placement' as const, placementGroup: 1, placementBestRank: 3, placementWorstRank: 4 };
+    const renderStageAction = vi.fn((stageMatches: typeof main[], label: string) => (
+      <button type="button">Adjust {label} ({stageMatches.length})</button>
+    ));
+
+    render(<KnockoutBracket teams={teams} matches={[main, placement]} renderStageAction={renderStageAction} />);
+
+    expect(screen.getByRole('button', { name: 'Adjust Preliminary (1)' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Adjust 3rd / 4th place · Placement round 1 (1)' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Placement round 1' })).toBeTruthy();
+    expect(renderStageAction).toHaveBeenCalledWith([main], 'Preliminary');
+    expect(renderStageAction).toHaveBeenCalledWith([placement], '3rd / 4th place · Placement round 1');
   });
 });

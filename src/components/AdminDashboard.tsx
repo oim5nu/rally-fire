@@ -3,7 +3,8 @@ import useSWR from 'swr';
 import { adminRequest, ApiError } from '../lib/api';
 import DateTimePicker from './DateTimePicker';
 import { useActivity } from '../lib/activity';
-import KnockoutBracket, { placementGroupLabel } from './KnockoutBracket';
+import KnockoutBracket from './KnockoutBracket';
+import { StageDrawEditor, type StageKey } from './StageDrawEditor';
 
 interface Membership {
   id: string;
@@ -69,6 +70,50 @@ export interface ManualPairRow {
   number: string;
   groupAPlayerId: string;
   groupBPlayerId: string;
+}
+
+interface SeasonPointRules {
+  winPoints: number;
+  lossPoints: number;
+  firstPlaceBonus: number;
+  secondPlaceBonus: number;
+  thirdPlaceBonus: number;
+  maxSessionPoints: number;
+}
+
+const maxSeasonPointValue = 99_999_999_999.9;
+
+export const seasonPointRuleFields = [
+  { name: 'winPoints', label: 'Set win points', defaultValue: 1, min: 0, max: maxSeasonPointValue },
+  { name: 'lossPoints', label: 'Set loss points', defaultValue: 0, min: 0, max: maxSeasonPointValue },
+  { name: 'firstPlaceBonus', label: '1st place bonus', defaultValue: 4, min: 0, max: maxSeasonPointValue },
+  { name: 'secondPlaceBonus', label: '2nd place bonus', defaultValue: 2, min: 0, max: maxSeasonPointValue },
+  { name: 'thirdPlaceBonus', label: '3rd place bonus', defaultValue: 1, min: 0, max: maxSeasonPointValue },
+  { name: 'maxSessionPoints', label: 'Maximum session points', defaultValue: 8, min: 0.1, max: maxSeasonPointValue },
+] as const;
+
+export function buildSeasonPointRulesFromForm(form: Pick<FormData, 'get'>): SeasonPointRules | null {
+  function numberValue(name: (typeof seasonPointRuleFields)[number]['name']): number | null {
+    const value = form.get(name);
+    if (typeof value !== 'string' || value.trim() === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  const winPoints = numberValue('winPoints');
+  const lossPoints = numberValue('lossPoints');
+  const firstPlaceBonus = numberValue('firstPlaceBonus');
+  const secondPlaceBonus = numberValue('secondPlaceBonus');
+  const thirdPlaceBonus = numberValue('thirdPlaceBonus');
+  const maxSessionPoints = numberValue('maxSessionPoints');
+  if (winPoints === null
+    || lossPoints === null
+    || firstPlaceBonus === null
+    || secondPlaceBonus === null
+    || thirdPlaceBonus === null
+    || maxSessionPoints === null) return null;
+
+  return { winPoints, lossPoints, firstPlaceBonus, secondPlaceBonus, thirdPlaceBonus, maxSessionPoints };
 }
 
 export type KnockoutSetupSource =
@@ -149,11 +194,34 @@ export function buildReturnToQuarterFinalConfigRequest(sessionId: string): Reque
   };
 }
 
-export function buildPlacementRepairRequest(sessionId: string, placementGroup: number, teamIds: string[]): RequestInit {
+export function buildScoreRequest(
+  matchId: string,
+  expectedTeamAId: string,
+  expectedTeamBId: string,
+  scoreA: number,
+  scoreB: number,
+  court: string | null,
+): RequestInit {
   return {
     method: 'POST',
-    body: JSON.stringify({ action: 're_pair_placement', sessionId, placementGroup, teamIds }),
+    body: JSON.stringify({
+      action: 'score',
+      matchId,
+      expectedTeamAId,
+      expectedTeamBId,
+      scoreA,
+      scoreB,
+      court,
+    }),
   };
+}
+
+export function matchScoreFormKey<T extends {
+  id: string;
+  teamAId: string | null;
+  teamBId: string | null;
+}>(match: T): string {
+  return JSON.stringify([match.id, match.teamAId, match.teamBId]);
 }
 
 function MatchScoreRow({
@@ -178,19 +246,23 @@ function MatchScoreRow({
 
   async function saveScore(event: React.FormEvent) {
     event.preventDefault();
+    if (!match.teamAId || !match.teamBId) {
+      const message = 'Both teams must be resolved before this match can be scored.';
+      setError(message);
+      reportError(message);
+      return;
+    }
     setBusy(true);
     setError('');
     try {
-      await track(() => adminRequest('/api/admin/sessions', {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'score',
-          matchId: match.id,
-          scoreA: Number(scoreA),
-          scoreB: Number(scoreB),
-          court: court || null,
-        }),
-      }));
+      await track(() => adminRequest('/api/admin/sessions', buildScoreRequest(
+        match.id,
+        match.teamAId!,
+        match.teamBId!,
+        Number(scoreA),
+        Number(scoreB),
+        court || null,
+      )));
       await onSaved();
     } catch (caught) {
       setError(errorMessage(caught));
@@ -230,83 +302,6 @@ function MatchScoreRow({
   );
 }
 
-function PlacementPairingControls({
-  session,
-  groups,
-  onSaved,
-}: {
-  session: AdminSession;
-  groups: ReturnType<typeof getEditablePlacementGroups>;
-  onSaved: () => Promise<void>;
-}) {
-  const [editingGroup, setEditingGroup] = useState<number | null>(null);
-  const [teamIds, setTeamIds] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const group = groups.find((candidate) => candidate.placementGroup === editingGroup);
-
-  function teamName(teamId: string) {
-    const team = session.teams.find((candidate) => candidate.id === teamId);
-    return team ? `#${team.seed} ${team.members.map((member) => member.name).join(' / ')}` : 'Unknown team';
-  }
-
-  if (!groups.length) return null;
-  if (!group) {
-    return (
-      <div className="flex flex-wrap gap-2" aria-label="Placement pairing controls">
-        {groups.map((candidate) => (
-          <button
-            key={candidate.placementGroup}
-            type="button"
-            onClick={() => { setEditingGroup(candidate.placementGroup); setTeamIds(candidate.teamIds); setError(''); }}
-            className="rounded-lg border border-tertiary-fixed/50 bg-tertiary-fixed/10 px-3 py-2 text-xs font-black text-tertiary-fixed transition-colors hover:bg-tertiary-fixed/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-tertiary-fixed"
-          >
-            Edit {placementGroupLabel(candidate.bestRank, candidate.worstRank)} pairings
-          </button>
-        ))}
-      </div>
-    );
-  }
-
-  const valid = teamIds.length === group.teamIds.length && new Set(teamIds).size === teamIds.length;
-  async function save() {
-    setBusy(true);
-    setError('');
-    try {
-      await adminRequest('/api/admin/sessions', buildPlacementRepairRequest(session.id, group.placementGroup, teamIds));
-      await onSaved();
-      setEditingGroup(null);
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="rounded-xl border border-tertiary-fixed/35 bg-tertiary-fixed/10 p-3" aria-label={`Edit ${placementGroupLabel(group.bestRank, group.worstRank)} pairings`}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h3 className="text-xs font-black uppercase tracking-wider text-tertiary-fixed">Edit placement pairings</h3><p className="mt-1 text-xs text-on-surface-variant">Reorder only this resolved loser cohort before its first score is saved.</p></div>
-        <div className="flex gap-2">
-          <button type="button" disabled={busy} onClick={() => setEditingGroup(null)} className="rounded-lg border border-outline-variant px-3 py-2 text-xs font-bold text-white disabled:opacity-50">Cancel</button>
-          <button type="button" disabled={busy || !valid} onClick={() => void save()} className="rounded-lg bg-tertiary-fixed px-3 py-2 text-xs font-black text-on-tertiary-fixed disabled:opacity-40">Save pairings</button>
-        </div>
-      </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        {teamIds.map((teamId, index) => (
-          <label key={index} className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Entry slot {index + 1}
-            <select value={teamId} disabled={busy} onChange={(event) => setTeamIds((current) => current.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry))} className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container px-3 py-2 text-xs font-normal normal-case text-white">
-              {group.teamIds.map((candidateTeamId) => <option key={candidateTeamId} value={candidateTeamId}>{teamName(candidateTeamId)}</option>)}
-            </select>
-          </label>
-        ))}
-      </div>
-      {!valid && <p className="mt-2 text-xs text-red-300">Use every eligible team exactly once.</p>}
-      {error && <p role="alert" className="mt-2 text-xs text-red-300">{error}</p>}
-    </section>
-  );
-}
-
 export function countAttendeeGroups(
   selectedPlayers: ReadonlySet<string>,
   groupOverrides: Readonly<Record<string, 'A' | 'B'>>,
@@ -327,10 +322,20 @@ export function countAttendeeGroups(
   };
 }
 
-export function sortPlayersByPoints(players: readonly AdminPlayer[]): AdminPlayer[] {
-  return [...players].sort(
-    (left, right) => right.points - left.points || left.name.localeCompare(right.name),
-  );
+export function formatPlayerPoints(points: number): string {
+  return `${points} pts`;
+}
+
+export function sortPlayersByPoints(
+  players: readonly AdminPlayer[],
+  order: 'ascending' | 'descending' = 'descending',
+): AdminPlayer[] {
+  return [...players].sort((left, right) => {
+    const pointsComparison = order === 'ascending'
+      ? left.points - right.points
+      : right.points - left.points;
+    return pointsComparison || left.name.localeCompare(right.name);
+  });
 }
 
 export function createManualPairRows(groupAIds: string[], groupBIds: string[]): ManualPairRow[] {
@@ -517,32 +522,6 @@ export function splitQualifyingKnockoutMatches(matches: AdminSession['matches'])
   };
 }
 
-export function getEditablePlacementGroups(matches: AdminSession['matches']) {
-  const groups = new Map<number, AdminMatch[]>();
-  for (const match of matches) {
-    if (match.matchKind !== 'placement' || match.placementGroup === null || match.placementGroup === undefined) continue;
-    groups.set(match.placementGroup, [...(groups.get(match.placementGroup) ?? []), match]);
-  }
-  return [...groups.entries()].sort(([left], [right]) => left - right).flatMap(([placementGroup, groupMatches]) => {
-    if (groupMatches.some((match) => match.status !== 'pending')) return [];
-    const bestRank = Math.min(...groupMatches.map((match) => match.placementBestRank ?? Number.POSITIVE_INFINITY));
-    const worstRank = Math.max(...groupMatches.map((match) => match.placementWorstRank ?? 0));
-    const groupMatchIds = new Set(groupMatches.map((match) => match.id));
-    const groupMatchById = new Map(groupMatches.map((match) => [match.id, match]));
-    const sourceMatches = matches
-      .filter((match) => match.matchKind === 'championship' && match.loserNextMatchId && groupMatchIds.has(match.loserNextMatchId))
-      .sort((left, right) =>
-        (groupMatchById.get(left.loserNextMatchId!)?.sequence ?? 0) - (groupMatchById.get(right.loserNextMatchId!)?.sequence ?? 0)
-        || (left.loserToSlot ?? '').localeCompare(right.loserToSlot ?? ''),
-      );
-    if (!Number.isFinite(bestRank)
-      || sourceMatches.length !== worstRank - bestRank + 1
-      || sourceMatches.some((match) => match.status !== 'completed' || !match.teamAId || !match.teamBId || match.scoreA === null || match.scoreB === null || !match.loserToSlot)) return [];
-    const teamIds = sourceMatches.map((match) => match.scoreA! < match.scoreB! ? match.teamAId! : match.teamBId!);
-    return [{ placementGroup, bestRank, worstRank, teamIds }];
-  });
-}
-
 export function shouldShowQuarterFinalConfigReturn(format: AdminSession['format'], matches: AdminSession['matches']) {
   return format === 'qualifying_knockout' && matches.some((match) => match.bracketRound !== null);
 }
@@ -566,6 +545,10 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
       status: string;
       winPoints: number;
       lossPoints: number;
+      firstPlaceBonus: number;
+      secondPlaceBonus: number;
+      thirdPlaceBonus: number;
+      maxSessionPoints: number;
     }>;
   }>('/api/admin/seasons', adminFetcher);
   const activeSeason = seasonData?.seasons.find((season) => season.status === 'active');
@@ -618,7 +601,6 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const qualifyingConsolationTeams = validQuarterFinalSelection
     ? getQuarterFinalPlayoffTeams(qualifyingStandings, quarterFinalTeamIds)
     : getQualifyingConsolationTeams(qualifyingStandings);
-  const editablePlacementGroups = session ? getEditablePlacementGroups(session.matches) : [];
   const validQualifyingMatchSetup = session?.format !== 'qualifying_knockout'
     || isValidQualifyingMatchSetup(manualPairs.length, qualifyingMatchSetup);
   const qualifiersComplete = session?.format === 'qualifying_knockout'
@@ -629,11 +611,34 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   const canReturnToQuarterFinalConfig = session
     ? shouldShowQuarterFinalConfigReturn(session.format, session.matches)
     : false;
+  const onStageDrawSaved = async () => {
+    await mutateSession();
+    onDataChanged();
+  };
+  const renderBracketStageAction = (stageMatches: AdminMatch[], label: string) => {
+    const firstMatch = stageMatches[0];
+    if (!session || !firstMatch || (firstMatch.matchKind !== 'championship' && firstMatch.matchKind !== 'placement')) return null;
+    const stage: StageKey = {
+      matchKind: firstMatch.matchKind,
+      bracketRound: firstMatch.bracketRound,
+      placementGroup: firstMatch.placementGroup ?? null,
+    };
+    return (
+      <StageDrawEditor
+        sessionId={session.id}
+        stage={stage}
+        matches={stageMatches}
+        teams={session.teams}
+        label={label}
+        onSaved={onStageDrawSaved}
+      />
+    );
+  };
 
   useEffect(() => {
     setManualPairs(createManualPairRows(
       groupAPlayers.map((player) => player.id),
-      groupBPlayers.map((player) => player.id),
+      sortPlayersByPoints(groupBPlayers, 'ascending').map((player) => player.id),
     ));
   }, [selectedPlayers, groupOverrides, players]);
 
@@ -701,14 +706,20 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
   async function createSeason(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const pointRules = buildSeasonPointRulesFromForm(form);
+    if (!pointRules) {
+      const message = 'Enter a valid value for every scoring rule.';
+      setError(message);
+      reportError(message);
+      return;
+    }
     await runAction(
       () => adminRequest('/api/admin/seasons', {
         method: 'POST',
         body: JSON.stringify({
           name: form.get('name'),
           startsAt: new Date(String(form.get('startsAt'))).toISOString(),
-          winPoints: Number(form.get('winPoints')),
-          lossPoints: Number(form.get('lossPoints')),
+          ...pointRules,
         }),
       }),
       'Season created. Add the first players next.',
@@ -922,14 +933,20 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
     event.preventDefault();
     if (!activeSeason) return;
     const form = new FormData(event.currentTarget);
+    const pointRules = buildSeasonPointRulesFromForm(form);
+    if (!pointRules) {
+      const message = 'Enter a valid value for every scoring rule.';
+      setError(message);
+      reportError(message);
+      return;
+    }
     await runAction(
       () =>
         adminRequest('/api/admin/seasons', {
           method: 'PATCH',
           body: JSON.stringify({
             seasonId: activeSeason.id,
-            winPoints: Number(form.get('winPoints')),
-            lossPoints: Number(form.get('lossPoints')),
+            ...pointRules,
           }),
         }),
       'Default season awards updated. Existing sessions keep their snapshots.',
@@ -980,20 +997,24 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
 
       {!activeSeason && membership.role === 'superadmin' && (
         <form onSubmit={createSeason} className="grid gap-4 rounded-2xl border border-primary-fixed/25 bg-surface-container p-6 md:grid-cols-2">
-          <div className="md:col-span-2"><h2 className="text-xl font-black text-white">Create the first season</h2><p className="mt-1 text-sm text-on-surface-variant">The app starts empty. These award values are snapshotted into each new session.</p></div>
+          <div className="md:col-span-2"><h2 className="text-xl font-black text-white">Create the first season</h2><p className="mt-1 text-sm text-on-surface-variant">The app starts empty. Set the schedule and scoring rules below.</p></div>
           <label className="text-xs font-bold uppercase tracking-wide text-on-surface-variant">
             Season name
             <input name="name" required placeholder="e.g. Winter League 2026" className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 font-normal normal-case tracking-normal text-white outline-none transition focus:border-primary-fixed focus:ring-2 focus:ring-primary-fixed/30" />
           </label>
           <DateTimePicker name="startsAt" label="Season starts" required />
-          <label className="text-xs font-bold uppercase tracking-wide text-on-surface-variant">
-            Winner points
-            <input name="winPoints" type="number" min="0" step="0.1" defaultValue="150" required className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 font-normal normal-case tracking-normal text-white outline-none transition focus:border-primary-fixed focus:ring-2 focus:ring-primary-fixed/30" />
-          </label>
-          <label className="text-xs font-bold uppercase tracking-wide text-on-surface-variant">
-            Loser points
-            <input name="lossPoints" type="number" min="0" step="0.1" defaultValue="30" required className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 font-normal normal-case tracking-normal text-white outline-none transition focus:border-primary-fixed focus:ring-2 focus:ring-primary-fixed/30" />
-          </label>
+          <fieldset className="rounded-xl border border-outline-variant/25 bg-surface-dim/40 p-4 md:col-span-2">
+            <legend className="px-2 text-xs font-black uppercase tracking-widest text-primary-fixed">Scoring rules</legend>
+            <p className="mb-3 text-xs text-on-surface-variant">Values are snapshotted into new sessions; each team member receives the full capped team total.</p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {seasonPointRuleFields.map((field) => (
+                <label key={field.name} className="text-xs font-bold uppercase tracking-wide text-on-surface-variant">
+                  {field.label}
+                  <input name={field.name} type="number" min={field.min} max={field.max} step="0.1" defaultValue={field.defaultValue} required className="mt-2 w-full rounded-lg border border-outline-variant bg-surface-dim px-4 py-3 font-normal normal-case tracking-normal text-white outline-none transition focus:border-primary-fixed focus:ring-2 focus:ring-primary-fixed/30" />
+                </label>
+              ))}
+            </div>
+          </fieldset>
           <button disabled={busy} className="rounded-lg bg-primary-fixed px-5 py-3 text-sm font-black text-on-primary-fixed md:col-span-2 disabled:opacity-50">Create season</button>
         </form>
       )}
@@ -1004,10 +1025,20 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
             <div><p className="text-xs font-bold uppercase tracking-widest text-primary-fixed">{activeSeason.name}</p><h2 className="mt-1 text-xl font-black text-white">Season roster</h2></div>
             {membership.role === 'superadmin' && (
               <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
-                <form onSubmit={updateSeason} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
-                  <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Win points<input name="winPoints" type="number" min="0" step="0.1" defaultValue={activeSeason.winPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
-                  <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Loss points<input name="lossPoints" type="number" min="0" step="0.1" defaultValue={activeSeason.lossPoints} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm text-white" /></label>
-                  <button disabled={busy} className="rounded border border-primary-fixed px-3 py-2 text-xs font-black text-primary-fixed disabled:opacity-50">Save</button>
+                <form onSubmit={updateSeason}>
+                  <fieldset>
+                    <legend className="text-xs font-black uppercase tracking-widest text-primary-fixed">Scoring rules</legend>
+                    <p className="mt-1 text-[11px] text-on-surface-variant">Values are snapshotted into new sessions; each team member receives the full capped team total.</p>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      {seasonPointRuleFields.map((field) => (
+                        <label key={field.name} className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">
+                          {field.label}
+                          <input name={field.name} type="number" min={field.min} max={field.max} step="0.1" defaultValue={activeSeason[field.name]} required className="mt-1 w-full rounded border border-outline-variant bg-surface-container px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-white" />
+                        </label>
+                      ))}
+                    </div>
+                    <button disabled={busy} className="mt-3 w-full rounded bg-primary-fixed px-3 py-2 text-xs font-black text-on-primary-fixed disabled:opacity-50">Save</button>
+                  </fieldset>
                 </form>
                 <button type="button" disabled={busy} onClick={() => void archiveSeason()} className="w-full rounded border border-red-300/70 px-3 py-2 text-xs font-black text-red-200 disabled:opacity-50">Finalize / Archive season</button>
               </div>
@@ -1079,7 +1110,10 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                   {sortedPlayers.filter((player) => player.active).map((player) => (
                     <div key={player.id} className="flex items-center gap-2 rounded-lg bg-surface-dim/60 p-2">
                       <input type="checkbox" checked={selectedPlayers.has(player.id)} onChange={(event) => { setAttendanceDirty(true); setSelectedPlayers((current) => { const next = new Set(current); event.target.checked ? next.add(player.id) : next.delete(player.id); return next; }); }} aria-label={`Include ${player.name}`} />
-                      <span className="min-w-0 flex-1 truncate text-sm font-bold text-white">{player.name}</span>
+                      <span className="min-w-0 flex-1 truncate text-sm font-bold text-white">
+                        {player.name}
+                        {selectedPlayers.has(player.id) && <span className="font-normal text-on-surface-variant"> · {formatPlayerPoints(player.points)}</span>}
+                      </span>
                       {selectedPlayers.has(player.id) && <select aria-label={`${player.name} group`} value={groupOverrides[player.id] ?? ''} onChange={(event) => { setAttendanceDirty(true); setGroupOverrides((current) => { const next = { ...current }; if (event.target.value) next[player.id] = event.target.value as 'A' | 'B'; else delete next[player.id]; return next; }); }} className="rounded border border-outline-variant bg-surface-container px-1 py-1 text-xs text-white"><option value="">Auto</option><option value="A">A</option><option value="B">B</option></select>}
                     </div>
                   ))}
@@ -1100,8 +1134,8 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                     {manualPairs.map((pair, index) => (
                       <div key={index} className="grid grid-cols-[5rem_1fr_1fr] gap-2">
                         <input aria-label={`Pair ${index + 1} number`} type="number" min="1" step="1" value={pair.number} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, number: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white" />
-                        <select aria-label={`Pair ${index + 1} group A player`} value={pair.groupAPlayerId} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, groupAPlayerId: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{groupAPlayers.map((player) => <option key={player.id} value={player.id}>A · {player.name}</option>)}</select>
-                        <select aria-label={`Pair ${index + 1} group B player`} value={pair.groupBPlayerId} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, groupBPlayerId: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{groupBPlayers.map((player) => <option key={player.id} value={player.id}>B · {player.name}</option>)}</select>
+                        <select aria-label={`Pair ${index + 1} group A player`} value={pair.groupAPlayerId} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, groupAPlayerId: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{groupAPlayers.map((player) => <option key={player.id} value={player.id}>A · {player.name} · {formatPlayerPoints(player.points)}</option>)}</select>
+                        <select aria-label={`Pair ${index + 1} group B player`} value={pair.groupBPlayerId} onChange={(event) => setManualPairs((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, groupBPlayerId: event.target.value } : row))} className="rounded border border-outline-variant bg-surface-container px-2 py-2 text-xs text-white">{groupBPlayers.map((player) => <option key={player.id} value={player.id}>B · {player.name} · {formatPlayerPoints(player.points)}</option>)}</select>
                       </div>
                     ))}
                     {session.format === 'knockout' && (
@@ -1149,14 +1183,14 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                 <button type="button" disabled={busy} onClick={returnToAttendance} className="w-fit text-xs font-bold text-red-300 underline disabled:opacity-50">Return to attendance</button>
                 {session.format === 'knockout' ? (
                   <div className="space-y-3">
-                    <PlacementPairingControls session={session} groups={editablePlacementGroups} onSaved={async () => { await mutateSession(); onDataChanged(); }} />
-                    <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                    <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow key={matchScoreFormKey(match)} match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} renderStageAction={renderBracketStageAction} />
                   </div>
                 ) : session.format === 'qualifying_knockout' ? (
                   <div className="space-y-4">
                     <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
                       <div><h3 className="text-sm font-black text-white">Qualifying matches</h3><p className="mt-1 text-xs text-on-surface-variant">Complete all five matches. The lowest two teams by win %, point differential, points scored, then seed are eliminated.</p></div>
-                      {qualifierMatches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}
+                      <StageDrawEditor sessionId={session.id} stage={{ matchKind: 'qualifier', bracketRound: null, placementGroup: null }} matches={qualifierMatches} teams={session.teams} label="qualifying matches" onSaved={onStageDrawSaved} />
+                      {qualifierMatches.map((match) => <MatchScoreRow key={matchScoreFormKey(match)} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}
                     </div>
                     {qualifyingStandings.length > 0 && (
                       <div className="rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
@@ -1175,7 +1209,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                       <div className="space-y-3 rounded-xl border border-outline-variant/20 bg-surface-dim/40 p-3">
                         <div><h3 className="text-sm font-black text-white">Eliminated pair playoff</h3><p className="mt-1 text-xs text-on-surface-variant">The two eliminated pairs can still play and record their score after the knockout bracket starts.</p></div>
                         {consolationMatches.length > 0 ? (
-                          consolationMatches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)
+                          consolationMatches.map((match) => <MatchScoreRow key={matchScoreFormKey(match)} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)
                         ) : (
                           <div className="flex items-center justify-between gap-3 rounded-lg bg-surface-container px-3 py-3 text-sm text-white">
                             <span className="font-bold">#{qualifyingConsolationTeams[0].seed} {qualifyingConsolationTeams[0].team.members.map((member) => member.name).join(' / ')}</span>
@@ -1190,8 +1224,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                         {canReturnToQuarterFinalConfig && (
                           <button type="button" disabled={busy} onClick={returnToQuarterFinalConfig} className="w-fit rounded-lg border border-red-300 px-4 py-2 text-xs font-black text-red-300 disabled:opacity-50">Return to quarter-final configuration</button>
                         )}
-                        <PlacementPairingControls session={session} groups={editablePlacementGroups} onSaved={async () => { await mutateSession(); onDataChanged(); }} />
-                        <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} />
+                        <KnockoutBracket teams={session.teams} matches={session.matches} renderMatch={(match, teamA, teamB) => teamA && teamB ? <MatchScoreRow key={matchScoreFormKey(match)} match={match} session={session} compact onSaved={async () => { await mutateSession(); onDataChanged(); }} /> : undefined} renderStageAction={renderBracketStageAction} />
                       </div>
                     ) : qualifyingBracketPending ? (
                       <div className="space-y-3 rounded-xl border border-primary-fixed/30 bg-primary-fixed/10 p-3">
@@ -1216,7 +1249,10 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                     )}
                   </div>
                 ) : (
-                  <div className="space-y-3">{session.matches.map((match) => <MatchScoreRow key={match.id} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}</div>
+                  <div className="space-y-3">
+                    <StageDrawEditor sessionId={session.id} stage={{ matchKind: 'round_robin', bracketRound: null, placementGroup: null }} matches={session.matches} teams={session.teams} label="round robin" onSaved={onStageDrawSaved} />
+                    {session.matches.map((match) => <MatchScoreRow key={matchScoreFormKey(match)} match={match} session={session} onSaved={async () => { await mutateSession(); onDataChanged(); }} />)}
+                  </div>
                 )}
                 <button type="button" disabled={busy || session.matches.some((match) => match.status !== 'completed') || qualifyingBracketPending} onClick={() => runAction(() => adminRequest('/api/admin/sessions', { method: 'POST', body: JSON.stringify({ action: 'finalize', sessionId: session.id }) }), 'Session finalized and points awarded once.')} className="w-full rounded-lg bg-primary-fixed px-5 py-3 text-sm font-black text-on-primary-fixed disabled:cursor-not-allowed disabled:opacity-40">Finalize session and award points</button>
               </>

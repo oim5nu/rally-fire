@@ -63,69 +63,6 @@ export function planQuarterFinalConfigReturn(
   };
 }
 
-export function planPlacementRepair(
-  matchRows: ReadonlyArray<{
-    id: string;
-    sequence?: number;
-    matchKind: string;
-    placementGroup: number | null;
-    status: string;
-    teamAId: string | null;
-    teamBId: string | null;
-    scoreA: number | null;
-    scoreB: number | null;
-    loserNextMatchId: string | null;
-    loserToSlot: string | null;
-  }>,
-  placementGroup: number,
-  orderedTeamIds: readonly string[],
-) {
-  const placementMatches = matchRows.filter((match) => match.matchKind === 'placement' && match.placementGroup === placementGroup);
-  if (!placementMatches.length) throw new Error('The placement group does not exist.');
-  if (placementMatches.some((match) => match.status !== 'pending')) {
-    throw new Error('This placement group has already started.');
-  }
-  const placementMatchIds = new Set(placementMatches.map((match) => match.id));
-  const placementMatchById = new Map(placementMatches.map((match) => [match.id, match]));
-  const sourceMatches = matchRows.filter((match) =>
-    match.matchKind === 'championship'
-    && match.loserNextMatchId
-    && placementMatchIds.has(match.loserNextMatchId),
-  );
-  if (!sourceMatches.length || sourceMatches.some((match) =>
-    match.status !== 'completed'
-    || !match.teamAId
-    || !match.teamBId
-    || match.scoreA === null
-    || match.scoreB === null
-    || !match.loserToSlot)) {
-    throw new Error('Complete the championship source stage before editing this placement group.');
-  }
-  const sourceByLoserTeamId = new Map(sourceMatches.map((match) => {
-    const loserTeamId = match.scoreA! < match.scoreB! ? match.teamAId! : match.teamBId!;
-    return [loserTeamId, match] as const;
-  }));
-  const eligibleTeamIds = [...sourceByLoserTeamId.keys()].sort();
-  if (orderedTeamIds.length !== eligibleTeamIds.length
-    || new Set(orderedTeamIds).size !== orderedTeamIds.length
-    || [...orderedTeamIds].sort().join(',') !== eligibleTeamIds.join(',')) {
-    throw new Error('The requested teams must use the exact cohort of resolved losers.');
-  }
-  const destinations = sourceMatches
-    .map((match) => ({ nextMatchId: match.loserNextMatchId!, slot: match.loserToSlot as 'A' | 'B' }))
-    .sort((left, right) =>
-      (placementMatchById.get(left.nextMatchId)?.sequence ?? 0) - (placementMatchById.get(right.nextMatchId)?.sequence ?? 0)
-      || left.nextMatchId.localeCompare(right.nextMatchId)
-      || left.slot.localeCompare(right.slot),
-    );
-  return orderedTeamIds.map((teamId, index) => ({
-    sourceMatchId: sourceByLoserTeamId.get(teamId)!.id,
-    nextMatchId: destinations[index].nextMatchId,
-    slot: destinations[index].slot,
-    teamId,
-  }));
-}
-
 export function validateDraftFormatChange(status: string): void {
   if (status !== 'draft') throw new Error('Only a draft session can change competition format.');
 }

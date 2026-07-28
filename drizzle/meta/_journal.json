@@ -36,6 +36,13 @@
       "when": 1784036109102,
       "tag": "0004_mean_daredevil",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784373942824,
+      "tag": "0005_early_vin_gonzales",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export const pointValueSchema = z
   .number()
+  .min(-99_999_999_999.9, 'Points exceed the database minimum.')
+  .max(99_999_999_999.9, 'Points exceed the database maximum.')
   .refine((value) => Number.isInteger(value * 10), 'Points can have at most one decimal place.');
 
 export interface BulkPointAdjustmentInput {

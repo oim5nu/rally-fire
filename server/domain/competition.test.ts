@@ -12,7 +12,6 @@ import {
   calculateMatchAwards,
   planAttendanceRollback,
   planQuarterFinalConfigReturn,
-  planPlacementRepair,
   knockoutStageLabel,
   rankQualifyingTeams,
   resolveQualifyingKnockoutTeams,
@@ -317,26 +316,6 @@ describe('quarter-final configuration return', () => {
     expect(() => planQuarterFinalConfigReturn('round_robin', 'in_progress', matches)).toThrow(/qualifying knockout/i);
     expect(() => planQuarterFinalConfigReturn('qualifying_knockout', 'draft', matches)).toThrow(/published or in progress/i);
     expect(() => planQuarterFinalConfigReturn('qualifying_knockout', 'in_progress', matches.slice(0, 5))).toThrow(/generated bracket/i);
-  });
-});
-
-describe('placement re-pairing', () => {
-  const rows = [
-    { id: 'source-1', matchKind: 'championship', placementGroup: null, status: 'completed', teamAId: 'team-1', teamBId: 'team-8', scoreA: 11, scoreB: 7, loserNextMatchId: 'place-1', loserToSlot: 'A' },
-    { id: 'source-2', matchKind: 'championship', placementGroup: null, status: 'completed', teamAId: 'team-4', teamBId: 'team-5', scoreA: 8, scoreB: 11, loserNextMatchId: 'place-1', loserToSlot: 'B' },
-    { id: 'place-1', matchKind: 'placement', placementGroup: 2, status: 'pending', teamAId: 'team-8', teamBId: 'team-4', scoreA: null, scoreB: null, loserNextMatchId: null, loserToSlot: null },
-  ] as const;
-
-  it('rewires the same resolved loser cohort in the requested order', () => {
-    expect(planPlacementRepair(rows, 2, ['team-4', 'team-8'])).toEqual([
-      { sourceMatchId: 'source-2', nextMatchId: 'place-1', slot: 'A', teamId: 'team-4' },
-      { sourceMatchId: 'source-1', nextMatchId: 'place-1', slot: 'B', teamId: 'team-8' },
-    ]);
-  });
-
-  it('rejects changed cohorts and placement groups that have started', () => {
-    expect(() => planPlacementRepair(rows, 2, ['team-8', 'team-8'])).toThrow(/exact cohort/i);
-    expect(() => planPlacementRepair(rows.map((row) => row.id === 'place-1' ? { ...row, status: 'completed' as const } : row), 2, ['team-8', 'team-4'])).toThrow(/already started/i);
   });
 });
 

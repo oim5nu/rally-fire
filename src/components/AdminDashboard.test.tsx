@@ -1,10 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
+// @vitest-environment jsdom
+
+import '@testing-library/jest-dom/vitest';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import useSWR from 'swr';
+import { adminRequest } from '../lib/api';
+import { ActivityProvider } from '../lib/activity';
+import GlobalFeedback from './GlobalFeedback';
 import {
+  buildSeasonPointRulesFromForm,
   buildDeleteRosterPlayerRequest,
   buildArchiveSeasonRequest,
   buildBulkPointAdjustmentPayload,
   buildReturnToQuarterFinalConfigRequest,
-  buildPlacementRepairRequest,
+  buildScoreRequest,
   buildQualifyingStandings,
   buildManualPairPayload,
   countAttendeeGroups,
@@ -16,7 +25,8 @@ import {
   getAvailableQuarterFinalTeamIds,
   getQuarterFinalPlayoffTeams,
   getQualifyingConsolationTeams,
-  getEditablePlacementGroups,
+  formatPlayerPoints,
+  matchScoreFormKey,
   isValidQuarterFinalTeamSelection,
   isValidQualifyingMatchSetup,
   isValidKnockoutSetup,
@@ -26,7 +36,196 @@ import {
   shouldShowQuarterFinalConfigReturn,
   splitQualifyingKnockoutMatches,
   sortPlayersByPoints,
+  seasonPointRuleFields,
 } from './AdminDashboard';
+import AdminDashboard from './AdminDashboard';
+
+vi.mock('swr', () => ({ default: vi.fn() }));
+vi.mock('../lib/api', () => ({ adminRequest: vi.fn(), ApiError: class ApiError extends Error {} }));
+
+const mockedUseSWR = vi.mocked(useSWR);
+const mockedAdminRequest = vi.mocked(adminRequest);
+const maxPointValue = 99_999_999_999.9;
+const expectedRuleInputs = [
+  { name: 'winPoints', label: 'Set win points', defaultValue: 1, min: 0 },
+  { name: 'lossPoints', label: 'Set loss points', defaultValue: 0, min: 0 },
+  { name: 'firstPlaceBonus', label: '1st place bonus', defaultValue: 4, min: 0 },
+  { name: 'secondPlaceBonus', label: '2nd place bonus', defaultValue: 2, min: 0 },
+  { name: 'thirdPlaceBonus', label: '3rd place bonus', defaultValue: 1, min: 0 },
+  { name: 'maxSessionPoints', label: 'Maximum session points', defaultValue: 8, min: 0.1 },
+] as const;
+
+let seasons: Array<Record<string, unknown>> = [];
+
+function renderDashboard() {
+  const mutate = vi.fn().mockResolvedValue(undefined);
+  const playerData = { players: [] };
+  const sessionData = { session: null };
+  const memberData = { memberships: [] };
+  const inactiveData = { players: [], session: null };
+  mockedUseSWR.mockImplementation(((key: string | null) => {
+    if (key === '/api/admin/seasons') return { data: { seasons }, mutate };
+    if (key === '/api/admin/players') return { data: playerData, mutate };
+    if (key === '/api/admin/sessions') return { data: sessionData, mutate };
+    if (key === '/api/admin/members') return { data: memberData, mutate };
+    if (key === null) return { data: inactiveData, mutate };
+    return { data: undefined, mutate };
+  }) as never);
+
+  return render(
+    <ActivityProvider>
+      <GlobalFeedback />
+      <AdminDashboard
+        membership={{ id: 'admin-1', email: 'admin@example.com', role: 'superadmin', status: 'active' }}
+        onDataChanged={vi.fn()}
+      />
+    </ActivityProvider>,
+  );
+}
+
+function expectScoringRuleInputs(values: readonly number[]) {
+  const group = screen.getByRole('group', { name: 'Scoring rules' });
+  expect(within(group).getAllByRole('spinbutton')).toHaveLength(6);
+  expectedRuleInputs.forEach((field, index) => {
+    const input = within(group).getByRole('spinbutton', { name: field.label });
+    expect(input).toHaveValue(values[index]);
+    expect(input).toHaveAttribute('type', 'number');
+    expect(input).toHaveAttribute('step', '0.1');
+    expect(input).toHaveAttribute('min', String(field.min));
+    expect(input).toHaveAttribute('max', String(maxPointValue));
+    expect(input).toBeRequired();
+  });
+}
+
+function requestBody(callIndex = 0) {
+  const [, init] = mockedAdminRequest.mock.calls[callIndex];
+  return JSON.parse(String(init?.body)) as Record<string, unknown>;
+}
+
+afterEach(() => {
+  cleanup();
+  mockedAdminRequest.mockReset();
+  mockedUseSWR.mockReset();
+  seasons = [];
+});
+
+describe('season point rules', () => {
+  it('defines the six scoring inputs with their required defaults and constraints', () => {
+    expect(seasonPointRuleFields).toEqual(
+      expectedRuleInputs.map((field) => ({ ...field, max: maxPointValue })),
+    );
+  });
+
+  it('converts all six form values to numbers for season payloads', () => {
+    const values = new FormData();
+    values.set('winPoints', '1.5');
+    values.set('lossPoints', '0.5');
+    values.set('firstPlaceBonus', '4.5');
+    values.set('secondPlaceBonus', '2.5');
+    values.set('thirdPlaceBonus', '1.25');
+    values.set('maxSessionPoints', '9.5');
+
+    expect(buildSeasonPointRulesFromForm(values)).toEqual({
+      winPoints: 1.5,
+      lossPoints: 0.5,
+      firstPlaceBonus: 4.5,
+      secondPlaceBonus: 2.5,
+      thirdPlaceBonus: 1.25,
+      maxSessionPoints: 9.5,
+    });
+  });
+
+  it.each([
+    ['missing', null],
+    ['empty', ''],
+    ['not a number', 'invalid'],
+    ['infinite', 'Infinity'],
+  ])('rejects a %s scoring value', (_case, invalidValue) => {
+    const values = new FormData();
+    expectedRuleInputs.forEach((field) => values.set(field.name, String(field.defaultValue)));
+    if (invalidValue === null) values.delete('thirdPlaceBonus');
+    else values.set('thirdPlaceBonus', invalidValue);
+
+    expect(buildSeasonPointRulesFromForm(values)).toBeNull();
+  });
+});
+
+describe('season point rule forms', () => {
+  it('renders and submits all six configured defaults from the create form', async () => {
+    mockedAdminRequest.mockResolvedValue({});
+    renderDashboard();
+
+    expectScoringRuleInputs(expectedRuleInputs.map((field) => field.defaultValue));
+    fireEvent.change(screen.getByLabelText('Season name'), { target: { value: 'Spring 2027' } });
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2027-09-01' } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: '18:30' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create season' }).closest('form')!);
+
+    await waitFor(() => expect(mockedAdminRequest).toHaveBeenCalledTimes(1));
+    expect(mockedAdminRequest).toHaveBeenCalledWith('/api/admin/seasons', expect.objectContaining({ method: 'POST' }));
+    expect(requestBody()).toMatchObject({
+      name: 'Spring 2027',
+      winPoints: 1,
+      lossPoints: 0,
+      firstPlaceBonus: 4,
+      secondPlaceBonus: 2,
+      thirdPlaceBonus: 1,
+      maxSessionPoints: 8,
+    });
+  });
+
+  it('renders and submits all six current values from the active-season edit form', async () => {
+    seasons = [{
+      id: 'season-1',
+      name: 'Winter 2027',
+      status: 'active',
+      winPoints: 1.5,
+      lossPoints: 0.5,
+      firstPlaceBonus: 4.5,
+      secondPlaceBonus: 2.5,
+      thirdPlaceBonus: 1.5,
+      maxSessionPoints: 9.5,
+    }];
+    mockedAdminRequest.mockResolvedValue({});
+    renderDashboard();
+
+    expectScoringRuleInputs([1.5, 0.5, 4.5, 2.5, 1.5, 9.5]);
+    fireEvent.submit(screen.getByRole('button', { name: 'Save' }).closest('form')!);
+
+    await waitFor(() => expect(mockedAdminRequest).toHaveBeenCalledTimes(1));
+    expect(mockedAdminRequest).toHaveBeenCalledWith('/api/admin/seasons', expect.objectContaining({ method: 'PATCH' }));
+    expect(requestBody()).toEqual({
+      seasonId: 'season-1',
+      winPoints: 1.5,
+      lossPoints: 0.5,
+      firstPlaceBonus: 4.5,
+      secondPlaceBonus: 2.5,
+      thirdPlaceBonus: 1.5,
+      maxSessionPoints: 9.5,
+    });
+  });
+
+  it('shows feedback and does not request when a submitted scoring value is empty', async () => {
+    mockedAdminRequest.mockResolvedValue({});
+    renderDashboard();
+    fireEvent.change(screen.getByRole('spinbutton', { name: '3rd place bonus' }), { target: { value: '' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create season' }).closest('form')!);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a valid value for every scoring rule.');
+    expect(mockedAdminRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('formatPlayerPoints', () => {
+  it.each([
+    [120, '120 pts'],
+    [150.5, '150.5 pts'],
+    [0, '0 pts'],
+    [-1, '-1 pts'],
+  ])('formats %s without rounding as %s', (points, expected) => {
+    expect(formatPlayerPoints(points)).toBe(expected);
+  });
+});
 
 describe('countAttendeeGroups', () => {
   it('counts selected manual groups and automatic attendees', () => {
@@ -64,6 +263,24 @@ describe('sortPlayersByPoints', () => {
     ]);
     expect(players.map((player) => player.id)).toEqual(originalOrder);
   });
+
+  it('sorts by points ascending and name ascending without mutating the source', () => {
+    const players = [
+      { id: 'highest', name: 'Aaron', displayRating: 'A1', clubSkill: 8, points: 30, active: true },
+      { id: 'tie-z', name: 'Zara', displayRating: 'A2', clubSkill: 7, points: 20, active: true },
+      { id: 'lowest', name: 'Zoe', displayRating: 'B2', clubSkill: 4, points: 10, active: true },
+      { id: 'tie-a', name: 'Amy', displayRating: 'A2', clubSkill: 7, points: 20, active: true },
+    ];
+    const originalOrder = players.map((player) => player.id);
+
+    expect(sortPlayersByPoints(players, 'ascending').map((player) => player.id)).toEqual([
+      'lowest',
+      'tie-a',
+      'tie-z',
+      'highest',
+    ]);
+    expect(players.map((player) => player.id)).toEqual(originalOrder);
+  });
 });
 
 describe('manual pairing', () => {
@@ -72,6 +289,26 @@ describe('manual pairing', () => {
       { number: '1', groupAPlayerId: 'a1', groupBPlayerId: 'b1' },
       { number: '2', groupAPlayerId: 'a2', groupBPlayerId: 'b2' },
     ]);
+  });
+
+  it('creates cross-ranked defaults from descending A and ascending B players', () => {
+    const groupA = sortPlayersByPoints([
+      { id: 'a-low', name: 'A Low', displayRating: 'A2', clubSkill: 6, points: 20, active: true },
+      { id: 'a-high', name: 'A High', displayRating: 'A1', clubSkill: 8, points: 80, active: true },
+    ]).map((player) => player.id);
+    const groupB = sortPlayersByPoints([
+      { id: 'b-high', name: 'B High', displayRating: 'B1', clubSkill: 5, points: 60, active: true },
+      { id: 'b-low', name: 'B Low', displayRating: 'B2', clubSkill: 3, points: 10, active: true },
+    ], 'ascending').map((player) => player.id);
+
+    expect(createManualPairRows(groupA, groupB)).toEqual([
+      { number: '1', groupAPlayerId: 'a-high', groupBPlayerId: 'b-low' },
+      { number: '2', groupAPlayerId: 'a-low', groupBPlayerId: 'b-high' },
+    ]);
+  });
+
+  it('does not create rows for unequal groups', () => {
+    expect(createManualPairRows(['a1', 'a2'], ['b1'])).toEqual([]);
   });
 
   it('builds a payload only when every player and pair number is unique', () => {
@@ -102,32 +339,38 @@ describe('knockout setup', () => {
   });
 });
 
-describe('placement pairing editor', () => {
-  const placementMatches = [
-    { id: 'c1', sequence: 1, teamAId: 'team-1', teamBId: 'team-8', scoreA: 11, scoreB: 7, court: null, status: 'completed' as const, bracketRound: 1, bracketPosition: 0, matchKind: 'championship' as const, placementGroup: null, placementBestRank: null, placementWorstRank: null, loserNextMatchId: 'p1', loserToSlot: 'A' as const },
-    { id: 'c2', sequence: 2, teamAId: 'team-4', teamBId: 'team-5', scoreA: 8, scoreB: 11, court: null, status: 'completed' as const, bracketRound: 1, bracketPosition: 1, matchKind: 'championship' as const, placementGroup: null, placementBestRank: null, placementWorstRank: null, loserNextMatchId: 'p1', loserToSlot: 'B' as const },
-    { id: 'c3', sequence: 3, teamAId: 'team-2', teamBId: 'team-7', scoreA: 11, scoreB: 6, court: null, status: 'completed' as const, bracketRound: 1, bracketPosition: 2, matchKind: 'championship' as const, placementGroup: null, placementBestRank: null, placementWorstRank: null, loserNextMatchId: 'p2', loserToSlot: 'A' as const },
-    { id: 'c4', sequence: 4, teamAId: 'team-3', teamBId: 'team-6', scoreA: 11, scoreB: 9, court: null, status: 'completed' as const, bracketRound: 1, bracketPosition: 3, matchKind: 'championship' as const, placementGroup: null, placementBestRank: null, placementWorstRank: null, loserNextMatchId: 'p2', loserToSlot: 'B' as const },
-    { id: 'p1', sequence: 8, teamAId: 'team-8', teamBId: 'team-4', scoreA: null, scoreB: null, court: null, status: 'pending' as const, bracketRound: 0, bracketPosition: 0, matchKind: 'placement' as const, placementGroup: 2, placementBestRank: 5, placementWorstRank: 8 },
-    { id: 'p2', sequence: 9, teamAId: 'team-7', teamBId: 'team-6', scoreA: null, scoreB: null, court: null, status: 'pending' as const, bracketRound: 0, bracketPosition: 1, matchKind: 'placement' as const, placementGroup: 2, placementBestRank: 5, placementWorstRank: 8 },
-  ];
+describe('score request', () => {
+  it('changes form identity only when the displayed pairing changes', () => {
+    const displayedMatch = {
+      id: 'match-1',
+      teamAId: 'team-a',
+      teamBId: 'team-b',
+      scoreA: null,
+      scoreB: null,
+      court: null,
+    };
 
-  it('offers a resolved unscored cohort and builds its API request', () => {
-    expect(getEditablePlacementGroups(placementMatches)).toEqual([
-      { placementGroup: 2, bestRank: 5, worstRank: 8, teamIds: ['team-8', 'team-4', 'team-7', 'team-6'] },
-    ]);
-    expect(buildPlacementRepairRequest('session-1', 2, ['team-4', 'team-8'])).toEqual({
+    expect(matchScoreFormKey({ ...displayedMatch, scoreA: 11, scoreB: 8, court: 'Court 2' }))
+      .toBe(matchScoreFormKey(displayedMatch));
+    expect(matchScoreFormKey({ ...displayedMatch, teamAId: 'team-c' }))
+      .not.toBe(matchScoreFormKey(displayedMatch));
+    expect(matchScoreFormKey({ ...displayedMatch, teamBId: 'team-d' }))
+      .not.toBe(matchScoreFormKey(displayedMatch));
+  });
+
+  it('locks the displayed teams into the score request', () => {
+    expect(buildScoreRequest('match-1', 'team-a', 'team-b', 11, 8, 'Court 2')).toEqual({
       method: 'POST',
-      body: JSON.stringify({ action: 're_pair_placement', sessionId: 'session-1', placementGroup: 2, teamIds: ['team-4', 'team-8'] }),
+      body: JSON.stringify({
+        action: 'score',
+        matchId: 'match-1',
+        expectedTeamAId: 'team-a',
+        expectedTeamBId: 'team-b',
+        scoreA: 11,
+        scoreB: 8,
+        court: 'Court 2',
+      }),
     });
-  });
-
-  it('hides a cohort after placement scoring starts', () => {
-    expect(getEditablePlacementGroups(placementMatches.map((match) => match.id === 'p1' ? { ...match, status: 'completed' as const } : match))).toEqual([]);
-  });
-
-  it('does not offer a direct placement match without championship loser routes', () => {
-    expect(getEditablePlacementGroups(placementMatches.filter((match) => match.matchKind === 'placement'))).toEqual([]);
   });
 });
 
