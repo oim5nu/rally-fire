@@ -57,10 +57,16 @@ const expectedRuleInputs = [
 
 let seasons: Array<Record<string, unknown>> = [];
 
-function renderDashboard() {
+function renderDashboard({
+  players = [],
+  session = null,
+}: {
+  players?: Array<Record<string, unknown>>;
+  session?: Record<string, unknown> | null;
+} = {}) {
   const mutate = vi.fn().mockResolvedValue(undefined);
-  const playerData = { players: [] };
-  const sessionData = { session: null };
+  const playerData = { players };
+  const sessionData = { session };
   const memberData = { memberships: [] };
   const inactiveData = { players: [], session: null };
   mockedUseSWR.mockImplementation(((key: string | null) => {
@@ -216,6 +222,66 @@ describe('season point rule forms', () => {
   });
 });
 
+describe('player sex controls', () => {
+  const player = {
+    id: 'player-1',
+    name: 'Alice',
+    sex: 'Unknown',
+    displayRating: 'NTRP 4.0',
+    clubSkill: 5,
+    points: 10,
+    active: true,
+  };
+
+  it('submits the selected sex when adding a player', async () => {
+    seasons = [{ id: 'season-1', name: 'Winter', status: 'active' }];
+    mockedAdminRequest.mockResolvedValue({});
+    renderDashboard();
+
+    fireEvent.change(screen.getByPlaceholderText('Player name'), { target: { value: 'Alice' } });
+    fireEvent.change(screen.getByPlaceholderText('Display rating, e.g. NTRP 4.0'), { target: { value: 'NTRP 4.0' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sex' }), { target: { value: 'F' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Add player' }).closest('form')!);
+
+    await waitFor(() => expect(mockedAdminRequest).toHaveBeenCalledTimes(1));
+    expect(mockedAdminRequest).toHaveBeenCalledWith('/api/admin/players', expect.objectContaining({ method: 'POST' }));
+    expect(requestBody()).toMatchObject({ name: 'Alice', sex: 'F' });
+  });
+
+  it('updates sex from the active roster row', async () => {
+    seasons = [{ id: 'season-1', name: 'Winter', status: 'active' }];
+    mockedAdminRequest.mockResolvedValue({});
+    renderDashboard({ players: [player] });
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Alice sex' }), { target: { value: 'M' } });
+
+    await waitFor(() => expect(mockedAdminRequest).toHaveBeenCalledTimes(1));
+    expect(mockedAdminRequest).toHaveBeenCalledWith('/api/admin/players', {
+      method: 'PATCH',
+      body: JSON.stringify({ playerId: 'player-1', sex: 'M' }),
+    });
+  });
+
+  it('displays sex beside a player in the attendance list', () => {
+    seasons = [{ id: 'season-1', name: 'Winter', status: 'active' }];
+    renderDashboard({
+      players: [{ ...player, sex: 'F' }],
+      session: {
+        id: 'session-1',
+        name: 'Wednesday Doubles',
+        scheduledAt: '2026-07-29T09:00:00.000Z',
+        format: 'round_robin',
+        status: 'draft',
+        participants: [{ playerId: 'player-1', name: 'Alice', status: 'attendee', group: 'A' }],
+        teams: [],
+        matches: [],
+      },
+    });
+
+    expect(screen.getByText('· F')).toBeInTheDocument();
+  });
+});
+
 describe('formatPlayerPoints', () => {
   it.each([
     [120, '120 pts'],
@@ -248,10 +314,10 @@ describe('countAttendeeGroups', () => {
 describe('sortPlayersByPoints', () => {
   it('sorts by points descending and name ascending without mutating the source', () => {
     const players = [
-      { id: 'low', name: 'Zoe', displayRating: 'B2', clubSkill: 4, points: 10, active: true },
-      { id: 'tie-z', name: 'Zara', displayRating: 'A2', clubSkill: 7, points: 20, active: true },
-      { id: 'highest', name: 'Aaron', displayRating: 'A1', clubSkill: 8, points: 30, active: false },
-      { id: 'tie-a', name: 'Amy', displayRating: 'A2', clubSkill: 7, points: 20, active: true },
+      { id: 'low', name: 'Zoe', sex: 'Unknown' as const, displayRating: 'B2', clubSkill: 4, points: 10, active: true },
+      { id: 'tie-z', name: 'Zara', sex: 'Unknown' as const, displayRating: 'A2', clubSkill: 7, points: 20, active: true },
+      { id: 'highest', name: 'Aaron', sex: 'Unknown' as const, displayRating: 'A1', clubSkill: 8, points: 30, active: false },
+      { id: 'tie-a', name: 'Amy', sex: 'Unknown' as const, displayRating: 'A2', clubSkill: 7, points: 20, active: true },
     ];
     const originalOrder = players.map((player) => player.id);
 
@@ -266,10 +332,10 @@ describe('sortPlayersByPoints', () => {
 
   it('sorts by points ascending and name ascending without mutating the source', () => {
     const players = [
-      { id: 'highest', name: 'Aaron', displayRating: 'A1', clubSkill: 8, points: 30, active: true },
-      { id: 'tie-z', name: 'Zara', displayRating: 'A2', clubSkill: 7, points: 20, active: true },
-      { id: 'lowest', name: 'Zoe', displayRating: 'B2', clubSkill: 4, points: 10, active: true },
-      { id: 'tie-a', name: 'Amy', displayRating: 'A2', clubSkill: 7, points: 20, active: true },
+      { id: 'highest', name: 'Aaron', sex: 'Unknown' as const, displayRating: 'A1', clubSkill: 8, points: 30, active: true },
+      { id: 'tie-z', name: 'Zara', sex: 'Unknown' as const, displayRating: 'A2', clubSkill: 7, points: 20, active: true },
+      { id: 'lowest', name: 'Zoe', sex: 'Unknown' as const, displayRating: 'B2', clubSkill: 4, points: 10, active: true },
+      { id: 'tie-a', name: 'Amy', sex: 'Unknown' as const, displayRating: 'A2', clubSkill: 7, points: 20, active: true },
     ];
     const originalOrder = players.map((player) => player.id);
 
@@ -285,7 +351,10 @@ describe('sortPlayersByPoints', () => {
 
 describe('manual pairing', () => {
   it('creates numbered rows from equally sized A and B groups', () => {
-    expect(createManualPairRows(['a1', 'a2'], ['b1', 'b2'])).toEqual([
+    expect(createManualPairRows(
+      [{ id: 'a1', sex: 'M' }, { id: 'a2', sex: 'F' }],
+      [{ id: 'b1', sex: 'F' }, { id: 'b2', sex: 'M' }],
+    )).toEqual([
       { number: '1', groupAPlayerId: 'a1', groupBPlayerId: 'b1' },
       { number: '2', groupAPlayerId: 'a2', groupBPlayerId: 'b2' },
     ]);
@@ -293,13 +362,13 @@ describe('manual pairing', () => {
 
   it('creates cross-ranked defaults from descending A and ascending B players', () => {
     const groupA = sortPlayersByPoints([
-      { id: 'a-low', name: 'A Low', displayRating: 'A2', clubSkill: 6, points: 20, active: true },
-      { id: 'a-high', name: 'A High', displayRating: 'A1', clubSkill: 8, points: 80, active: true },
-    ]).map((player) => player.id);
+      { id: 'a-low', name: 'A Low', sex: 'M' as const, displayRating: 'A2', clubSkill: 6, points: 20, active: true },
+      { id: 'a-high', name: 'A High', sex: 'M' as const, displayRating: 'A1', clubSkill: 8, points: 80, active: true },
+    ]);
     const groupB = sortPlayersByPoints([
-      { id: 'b-high', name: 'B High', displayRating: 'B1', clubSkill: 5, points: 60, active: true },
-      { id: 'b-low', name: 'B Low', displayRating: 'B2', clubSkill: 3, points: 10, active: true },
-    ], 'ascending').map((player) => player.id);
+      { id: 'b-high', name: 'B High', sex: 'M' as const, displayRating: 'B1', clubSkill: 5, points: 60, active: true },
+      { id: 'b-low', name: 'B Low', sex: 'M' as const, displayRating: 'B2', clubSkill: 3, points: 10, active: true },
+    ], 'ascending');
 
     expect(createManualPairRows(groupA, groupB)).toEqual([
       { number: '1', groupAPlayerId: 'a-high', groupBPlayerId: 'b-low' },
@@ -307,12 +376,63 @@ describe('manual pairing', () => {
     ]);
   });
 
+  it('reorders default partners to avoid female-female pairs', () => {
+    expect(createManualPairRows(
+      [{ id: 'a-m', sex: 'M' }, { id: 'a-f', sex: 'F' }],
+      [{ id: 'b-m', sex: 'M' }, { id: 'b-f', sex: 'F' }],
+    )).toEqual([
+      { number: '1', groupAPlayerId: 'a-m', groupBPlayerId: 'b-f' },
+      { number: '2', groupAPlayerId: 'a-f', groupBPlayerId: 'b-m' },
+    ]);
+  });
+
+  it('uses Unknown as a neutral partner for a female player', () => {
+    expect(createManualPairRows(
+      [{ id: 'a-f', sex: 'F' }, { id: 'a-m', sex: 'M' }],
+      [{ id: 'b-f', sex: 'F' }, { id: 'b-u', sex: 'Unknown' }],
+    )[0]).toEqual({
+      number: '1',
+      groupAPlayerId: 'a-f',
+      groupBPlayerId: 'b-u',
+    });
+  });
+
+  it('keeps only unavoidable female-female pairs', () => {
+    const rows = createManualPairRows(
+      [{ id: 'a-f1', sex: 'F' }, { id: 'a-f2', sex: 'F' }, { id: 'a-m', sex: 'M' }],
+      [{ id: 'b-f1', sex: 'F' }, { id: 'b-f2', sex: 'F' }, { id: 'b-m', sex: 'M' }],
+    );
+
+    expect(rows).toEqual([
+      { number: '1', groupAPlayerId: 'a-f1', groupBPlayerId: 'b-m' },
+      { number: '2', groupAPlayerId: 'a-f2', groupBPlayerId: 'b-f1' },
+      { number: '3', groupAPlayerId: 'a-m', groupBPlayerId: 'b-f2' },
+    ]);
+  });
+
+  it('is deterministic for all-female and no-female groups', () => {
+    expect(createManualPairRows(
+      [{ id: 'a-f1', sex: 'F' }, { id: 'a-f2', sex: 'F' }],
+      [{ id: 'b-f1', sex: 'F' }, { id: 'b-f2', sex: 'F' }],
+    ).map((row) => row.groupBPlayerId)).toEqual(['b-f1', 'b-f2']);
+    expect(createManualPairRows(
+      [{ id: 'a-m', sex: 'M' }, { id: 'a-u', sex: 'Unknown' }],
+      [{ id: 'b-u', sex: 'Unknown' }, { id: 'b-m', sex: 'M' }],
+    ).map((row) => row.groupBPlayerId)).toEqual(['b-u', 'b-m']);
+  });
+
   it('does not create rows for unequal groups', () => {
-    expect(createManualPairRows(['a1', 'a2'], ['b1'])).toEqual([]);
+    expect(createManualPairRows(
+      [{ id: 'a1', sex: 'M' }, { id: 'a2', sex: 'F' }],
+      [{ id: 'b1', sex: 'Unknown' }],
+    )).toEqual([]);
   });
 
   it('builds a payload only when every player and pair number is unique', () => {
-    const rows = createManualPairRows(['a1', 'a2'], ['b1', 'b2']);
+    const rows = createManualPairRows(
+      [{ id: 'a1', sex: 'M' }, { id: 'a2', sex: 'M' }],
+      [{ id: 'b1', sex: 'M' }, { id: 'b2', sex: 'M' }],
+    );
     expect(buildManualPairPayload(rows, ['a1', 'a2'], ['b1', 'b2'])).toEqual([
       { number: 1, groupAPlayerId: 'a1', groupBPlayerId: 'b1' },
       { number: 2, groupAPlayerId: 'a2', groupBPlayerId: 'b2' },

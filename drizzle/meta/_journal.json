@@ -43,6 +43,13 @@
       "when": 1784373942824,
       "tag": "0005_early_vin_gonzales",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785219067911,
+      "tag": "0006_add_player_sex",
+      "breakpoints": true
     }
   ]
 }

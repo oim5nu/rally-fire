@@ -22,6 +22,7 @@ export const seasonStatus = pgEnum('season_status', ['active', 'archived']);
 export const sessionFormat = pgEnum('session_format', ['round_robin', 'knockout', 'qualifying_knockout']);
 export const participantStatus = pgEnum('participant_status', ['attendee', 'reserve']);
 export const skillGroup = pgEnum('skill_group', ['A', 'B']);
+export const playerSex = pgEnum('player_sex', ['M', 'F', 'Unknown']);
 export const playSessionStatus = pgEnum('play_session_status', [
   'draft',
   'draw_published',
@@ -117,6 +118,7 @@ export const players = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     name: text('name').notNull(),
     email: text('email'),
+    sex: playerSex('sex').notNull().default('Unknown'),
     displayRating: text('display_rating').notNull(),
     clubSkill: integer('club_skill').notNull(),
     active: boolean('active').notNull().default(true),

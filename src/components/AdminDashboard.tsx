@@ -13,9 +13,12 @@ interface Membership {
   status: 'active' | 'disabled';
 }
 
+export type PlayerSex = 'M' | 'F' | 'Unknown';
+
 interface AdminPlayer {
   id: string;
   name: string;
+  sex: PlayerSex;
   displayRating: string;
   clubSkill: number;
   points: number;
@@ -338,12 +341,28 @@ export function sortPlayersByPoints(
   });
 }
 
-export function createManualPairRows(groupAIds: string[], groupBIds: string[]): ManualPairRow[] {
-  if (groupAIds.length !== groupBIds.length) return [];
-  return groupAIds.map((groupAPlayerId, index) => ({
+export function createManualPairRows(
+  groupAPlayers: ReadonlyArray<{ id: string; sex: PlayerSex }>,
+  groupBPlayers: ReadonlyArray<{ id: string; sex: PlayerSex }>,
+): ManualPairRow[] {
+  if (groupAPlayers.length !== groupBPlayers.length) return [];
+
+  const remainingGroupB = [...groupBPlayers];
+  const partners = new Array<(typeof groupBPlayers)[number] | undefined>(groupAPlayers.length);
+  groupAPlayers.forEach((player, index) => {
+    if (player.sex !== 'F') return;
+    const preferredIndex = remainingGroupB.findIndex((candidate) => candidate.sex !== 'F');
+    const selectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
+    partners[index] = remainingGroupB.splice(selectedIndex, 1)[0];
+  });
+  groupAPlayers.forEach((_player, index) => {
+    partners[index] ??= remainingGroupB.shift();
+  });
+
+  return groupAPlayers.map((groupAPlayer, index) => ({
     number: String(index + 1),
-    groupAPlayerId,
-    groupBPlayerId: groupBIds[index],
+    groupAPlayerId: groupAPlayer.id,
+    groupBPlayerId: partners[index]!.id,
   }));
 }
 
@@ -637,8 +656,8 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
 
   useEffect(() => {
     setManualPairs(createManualPairRows(
-      groupAPlayers.map((player) => player.id),
-      sortPlayersByPoints(groupBPlayers, 'ascending').map((player) => player.id),
+      groupAPlayers,
+      sortPlayersByPoints(groupBPlayers, 'ascending'),
     ));
   }, [selectedPlayers, groupOverrides, players]);
 
@@ -735,6 +754,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
         method: 'POST',
         body: JSON.stringify({
           name: form.get('name'),
+          sex: form.get('sex'),
           displayRating: form.get('displayRating'),
           clubSkill: Number(form.get('clubSkill')),
           openingPoints: Number(form.get('openingPoints')),
@@ -743,6 +763,16 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
       'Player added to the active season.',
     );
     if (succeeded) formElement.reset();
+  }
+
+  async function updatePlayerSex(playerId: string, sex: PlayerSex) {
+    await runAction(
+      () => adminRequest('/api/admin/players', {
+        method: 'PATCH',
+        body: JSON.stringify({ playerId, sex }),
+      }),
+      'Player sex updated.',
+    );
   }
 
   async function deleteRosterPlayer(player: AdminPlayer) {
@@ -1046,12 +1076,13 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
             <form onSubmit={addPlayer} className="grid gap-3 sm:grid-cols-2">
               <input name="name" required placeholder="Player name" className="rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" />
               <input name="displayRating" required placeholder="Display rating, e.g. NTRP 4.0" className="rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" />
+              <label className="text-xs text-on-surface-variant">Sex<select name="sex" defaultValue="Unknown" required className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white"><option value="M">M</option><option value="F">F</option><option value="Unknown">Unknown</option></select></label>
               <label className="text-xs text-on-surface-variant">Club skill 1-10<input name="clubSkill" type="number" min="1" max="10" defaultValue="5" required className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" /></label>
               <label className="text-xs text-on-surface-variant">Opening points<input name="openingPoints" type="number" step="0.1" defaultValue="0" required className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-dim px-3 py-2 text-sm text-white" /></label>
               <button disabled={busy} className="rounded-lg border border-primary-fixed px-4 py-2 text-sm font-black text-primary-fixed sm:col-span-2 disabled:opacity-50">Add player</button>
             </form>
             <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
-              {sortedPlayers.map((player) => <div key={player.id} className="flex items-center justify-between gap-3 rounded-lg bg-surface-dim/60 px-3 py-2 text-sm"><span className="min-w-0 flex-1 truncate font-bold text-white">{player.name}</span><span className="shrink-0 text-xs text-on-surface-variant">Skill {player.clubSkill} · {player.points} pts</span><button type="button" disabled={busy} onClick={() => void deleteRosterPlayer(player)} aria-label={`Delete ${player.name}`} className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-red-300 underline disabled:opacity-50">Delete</button></div>)}
+              {sortedPlayers.map((player) => <div key={player.id} className="flex items-center justify-between gap-3 rounded-lg bg-surface-dim/60 px-3 py-2 text-sm"><span className="min-w-0 flex-1 truncate font-bold text-white">{player.name}</span><select aria-label={`${player.name} sex`} value={player.sex} disabled={busy} onChange={(event) => void updatePlayerSex(player.id, event.target.value as PlayerSex)} className="shrink-0 rounded border border-outline-variant bg-surface-container px-1 py-1 text-xs text-white disabled:opacity-50"><option value="M">M</option><option value="F">F</option><option value="Unknown">Unknown</option></select><span className="shrink-0 text-xs text-on-surface-variant">Skill {player.clubSkill} · {player.points} pts</span><button type="button" disabled={busy} onClick={() => void deleteRosterPlayer(player)} aria-label={`Delete ${player.name}`} className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-red-300 underline disabled:opacity-50">Delete</button></div>)}
               {!players.length && <p className="py-5 text-center text-sm text-on-surface-variant">No players yet.</p>}
             </div>
             {players.length > 0 && (
@@ -1112,6 +1143,7 @@ export default function AdminDashboard({ membership, onDataChanged }: AdminDashb
                       <input type="checkbox" checked={selectedPlayers.has(player.id)} onChange={(event) => { setAttendanceDirty(true); setSelectedPlayers((current) => { const next = new Set(current); event.target.checked ? next.add(player.id) : next.delete(player.id); return next; }); }} aria-label={`Include ${player.name}`} />
                       <span className="min-w-0 flex-1 truncate text-sm font-bold text-white">
                         {player.name}
+                        <span className="font-normal text-on-surface-variant"> · {player.sex}</span>
                         {selectedPlayers.has(player.id) && <span className="font-normal text-on-surface-variant"> · {formatPlayerPoints(player.points)}</span>}
                       </span>
                       {selectedPlayers.has(player.id) && <select aria-label={`${player.name} group`} value={groupOverrides[player.id] ?? ''} onChange={(event) => { setAttendanceDirty(true); setGroupOverrides((current) => { const next = { ...current }; if (event.target.value) next[player.id] = event.target.value as 'A' | 'B'; else delete next[player.id]; return next; }); }} className="rounded border border-outline-variant bg-surface-container px-1 py-1 text-xs text-white"><option value="">Auto</option><option value="A">A</option><option value="B">B</option></select>}

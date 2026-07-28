@@ -16,17 +16,21 @@ import {
 import { pointValueSchema } from '../../server/domain/points.js';
 import { planSeasonRosterRemoval } from '../../server/domain/roster.js';
 
-const createPlayerSchema = z.object({
+const playerSexSchema = z.enum(['M', 'F', 'Unknown']);
+
+export const createPlayerSchema = z.object({
   name: z.string().trim().min(1).max(100),
   email: z.email().nullable().optional(),
+  sex: playerSexSchema,
   displayRating: z.string().trim().min(1).max(20),
   clubSkill: z.number().int().min(1).max(10),
   openingPoints: pointValueSchema.default(0),
 });
-const updatePlayerSchema = z.object({
+export const updatePlayerSchema = z.object({
   playerId: z.uuid(),
   name: z.string().trim().min(1).max(100).optional(),
   email: z.email().nullable().optional(),
+  sex: playerSexSchema.optional(),
   displayRating: z.string().trim().min(1).max(20).optional(),
   clubSkill: z.number().int().min(1).max(10).optional(),
   active: z.boolean().optional(),
@@ -56,6 +60,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           id: players.id,
           name: players.name,
           email: players.email,
+          sex: players.sex,
           displayRating: players.displayRating,
           clubSkill: players.clubSkill,
           active: players.active,
@@ -82,6 +87,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           .values({
             name: input.name,
             email: input.email?.toLowerCase() ?? null,
+            sex: input.sex,
             displayRating: input.displayRating,
             clubSkill: input.clubSkill,
           })
@@ -102,7 +108,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
           action: 'player.created',
           entityType: 'player',
           entityId: player.id,
-          details: { seasonId: season.id, openingPoints: input.openingPoints },
+          details: { seasonId: season.id, openingPoints: input.openingPoints, sex: input.sex },
         });
         return player;
       });
@@ -117,6 +123,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
         .set({
           ...(input.name ? { name: input.name } : {}),
           ...(input.email !== undefined ? { email: input.email?.toLowerCase() ?? null } : {}),
+          ...(input.sex !== undefined ? { sex: input.sex } : {}),
           ...(input.displayRating ? { displayRating: input.displayRating } : {}),
           ...(input.clubSkill !== undefined ? { clubSkill: input.clubSkill } : {}),
           ...(input.active !== undefined ? { active: input.active } : {}),
