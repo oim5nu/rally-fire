@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   boolean,
   check,
   index,
@@ -18,8 +19,10 @@ import {
 export const adminRole = pgEnum('admin_role', ['superadmin', 'admin']);
 export const membershipStatus = pgEnum('membership_status', ['active', 'disabled']);
 export const seasonStatus = pgEnum('season_status', ['active', 'archived']);
+export const sessionFormat = pgEnum('session_format', ['round_robin', 'knockout', 'qualifying_knockout']);
 export const participantStatus = pgEnum('participant_status', ['attendee', 'reserve']);
 export const skillGroup = pgEnum('skill_group', ['A', 'B']);
+export const playerSex = pgEnum('player_sex', ['M', 'F', 'Unknown']);
 export const playSessionStatus = pgEnum('play_session_status', [
   'draft',
   'draw_published',
@@ -28,10 +31,14 @@ export const playSessionStatus = pgEnum('play_session_status', [
   'voided',
 ]);
 export const matchStatus = pgEnum('match_status', ['pending', 'in_progress', 'completed']);
+export const matchKind = pgEnum('match_kind', ['round_robin', 'qualifier', 'championship', 'placement']);
+export const winnerSlot = pgEnum('winner_slot', ['A', 'B']);
 export const ledgerReason = pgEnum('ledger_reason', [
   'opening_balance',
   'match_win',
   'match_loss',
+  'placement_bonus',
+  'session_cap_adjustment',
   'manual_adjustment',
   'session_void',
 ]);
@@ -84,8 +91,12 @@ export const seasons = pgTable(
     status: seasonStatus('status').notNull().default('active'),
     startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
     endsAt: timestamp('ends_at', { withTimezone: true }),
-    winPoints: numeric('win_points', { precision: 12, scale: 1, mode: 'number' }).notNull().default(150),
-    lossPoints: numeric('loss_points', { precision: 12, scale: 1, mode: 'number' }).notNull().default(30),
+    winPoints: numeric('win_points', { precision: 12, scale: 1, mode: 'number' }).notNull().default(1),
+    lossPoints: numeric('loss_points', { precision: 12, scale: 1, mode: 'number' }).notNull().default(0),
+    firstPlaceBonus: numeric('first_place_bonus', { precision: 12, scale: 1, mode: 'number' }).notNull().default(4),
+    secondPlaceBonus: numeric('second_place_bonus', { precision: 12, scale: 1, mode: 'number' }).notNull().default(2),
+    thirdPlaceBonus: numeric('third_place_bonus', { precision: 12, scale: 1, mode: 'number' }).notNull().default(1),
+    maxSessionPoints: numeric('max_session_points', { precision: 12, scale: 1, mode: 'number' }).notNull().default(8),
     createdBy: uuid('created_by').references(() => adminMemberships.id),
     createdAt,
     updatedAt,
@@ -94,6 +105,10 @@ export const seasons = pgTable(
     uniqueIndex('seasons_one_active_unique').on(table.status).where(sql`${table.status} = 'active'`),
     check('seasons_win_points_nonnegative', sql`${table.winPoints} >= 0`),
     check('seasons_loss_points_nonnegative', sql`${table.lossPoints} >= 0`),
+    check('seasons_first_place_bonus_nonnegative', sql`${table.firstPlaceBonus} >= 0`),
+    check('seasons_second_place_bonus_nonnegative', sql`${table.secondPlaceBonus} >= 0`),
+    check('seasons_third_place_bonus_nonnegative', sql`${table.thirdPlaceBonus} >= 0`),
+    check('seasons_max_session_points_positive', sql`${table.maxSessionPoints} > 0`),
   ],
 ).enableRLS();
 
@@ -103,6 +118,7 @@ export const players = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     name: text('name').notNull(),
     email: text('email'),
+    sex: playerSex('sex').notNull().default('Unknown'),
     displayRating: text('display_rating').notNull(),
     clubSkill: integer('club_skill').notNull(),
     active: boolean('active').notNull().default(true),
@@ -137,10 +153,15 @@ export const playSessions = pgTable(
       .notNull()
       .references(() => seasons.id, { onDelete: 'restrict' }),
     name: text('name').notNull(),
+    format: sessionFormat('format').notNull().default('round_robin'),
     scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull(),
     status: playSessionStatus('status').notNull().default('draft'),
     winPointsSnapshot: numeric('win_points_snapshot', { precision: 12, scale: 1, mode: 'number' }).notNull(),
     lossPointsSnapshot: numeric('loss_points_snapshot', { precision: 12, scale: 1, mode: 'number' }).notNull(),
+    firstPlaceBonusSnapshot: numeric('first_place_bonus_snapshot', { precision: 12, scale: 1, mode: 'number' }).notNull().default(4),
+    secondPlaceBonusSnapshot: numeric('second_place_bonus_snapshot', { precision: 12, scale: 1, mode: 'number' }).notNull().default(2),
+    thirdPlaceBonusSnapshot: numeric('third_place_bonus_snapshot', { precision: 12, scale: 1, mode: 'number' }).notNull().default(1),
+    maxSessionPointsSnapshot: numeric('max_session_points_snapshot', { precision: 12, scale: 1, mode: 'number' }).notNull().default(8),
     replacementForSessionId: uuid('replacement_for_session_id'),
     finalizedAt: timestamp('finalized_at', { withTimezone: true }),
     voidedAt: timestamp('voided_at', { withTimezone: true }),
@@ -155,6 +176,10 @@ export const playSessions = pgTable(
       .where(sql`${table.status} IN ('draft', 'draw_published', 'in_progress')`),
     check('play_sessions_win_points_nonnegative', sql`${table.winPointsSnapshot} >= 0`),
     check('play_sessions_loss_points_nonnegative', sql`${table.lossPointsSnapshot} >= 0`),
+    check('play_sessions_first_place_bonus_nonnegative', sql`${table.firstPlaceBonusSnapshot} >= 0`),
+    check('play_sessions_second_place_bonus_nonnegative', sql`${table.secondPlaceBonusSnapshot} >= 0`),
+    check('play_sessions_third_place_bonus_nonnegative', sql`${table.thirdPlaceBonusSnapshot} >= 0`),
+    check('play_sessions_max_session_points_positive', sql`${table.maxSessionPointsSnapshot} > 0`),
     index('play_sessions_season_status_idx').on(table.seasonId, table.status),
   ],
 ).enableRLS();
@@ -216,12 +241,20 @@ export const matches = pgTable(
       .notNull()
       .references(() => playSessions.id, { onDelete: 'cascade' }),
     sequence: integer('sequence').notNull(),
+    matchKind: matchKind('match_kind').notNull().default('round_robin'),
     teamAId: uuid('team_a_id')
-      .notNull()
       .references(() => teams.id, { onDelete: 'restrict' }),
     teamBId: uuid('team_b_id')
-      .notNull()
       .references(() => teams.id, { onDelete: 'restrict' }),
+    bracketRound: integer('bracket_round'),
+    bracketPosition: integer('bracket_position'),
+    placementGroup: integer('placement_group'),
+    placementBestRank: integer('placement_best_rank'),
+    placementWorstRank: integer('placement_worst_rank'),
+    nextMatchId: uuid('next_match_id').references((): AnyPgColumn => matches.id, { onDelete: 'set null' }),
+    winnerToSlot: winnerSlot('winner_to_slot'),
+    loserNextMatchId: uuid('loser_next_match_id').references((): AnyPgColumn => matches.id, { onDelete: 'set null' }),
+    loserToSlot: winnerSlot('loser_to_slot'),
     court: text('court'),
     scoreA: integer('score_a'),
     scoreB: integer('score_b'),
@@ -231,7 +264,16 @@ export const matches = pgTable(
   },
   (table) => [
     uniqueIndex('matches_session_sequence_unique').on(table.sessionId, table.sequence),
+    uniqueIndex('matches_session_bracket_position_unique')
+      .on(table.sessionId, table.matchKind, sql`coalesce(${table.placementGroup}, 0)`, table.bracketRound, table.bracketPosition)
+      .where(sql`${table.bracketRound} IS NOT NULL`),
+    index('matches_next_match_idx').on(table.nextMatchId),
+    index('matches_loser_next_match_idx').on(table.loserNextMatchId),
     check('matches_different_teams', sql`${table.teamAId} <> ${table.teamBId}`),
+    check(
+      'matches_placement_metadata',
+      sql`(${table.matchKind} <> 'placement' AND ${table.placementGroup} IS NULL AND ${table.placementBestRank} IS NULL AND ${table.placementWorstRank} IS NULL) OR (${table.matchKind} = 'placement' AND ${table.placementGroup} IS NOT NULL AND ${table.placementBestRank} IS NOT NULL AND ${table.placementWorstRank} IS NOT NULL AND ${table.placementBestRank} < ${table.placementWorstRank})`,
+    ),
     check(
       'matches_scores_range',
       sql`(${table.scoreA} IS NULL OR ${table.scoreA} BETWEEN 0 AND 99) AND (${table.scoreB} IS NULL OR ${table.scoreB} BETWEEN 0 AND 99)`,

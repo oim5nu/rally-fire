@@ -1,19 +1,24 @@
 import React, { useState } from 'react';
 import type { MatchPair, Player } from '../types';
+import KnockoutBracket from './KnockoutBracket';
+import type { BracketMatch, BracketTeam } from './KnockoutBracket';
 
 interface MobileViewProps {
   players: Player[];
   matches: MatchPair[];
+  activeSession: null | { format: 'round_robin' | 'knockout' | 'qualifying_knockout'; teams: BracketTeam[]; matches: BracketMatch[] };
   lang: 'en' | 'zh';
   setLang: (lang: 'en' | 'zh') => void;
 }
 
-export default function MobileView({ players, matches, lang, setLang }: MobileViewProps) {
+export default function MobileView({ players, matches, activeSession, lang, setLang }: MobileViewProps) {
   const [view, setView] = useState<'matches' | 'leaderboard'>('matches');
   const sortedPlayers = [...players].sort((left, right) => right.points - left.points);
+  const hasKnockoutBracket = activeSession?.format === 'knockout'
+    || (activeSession?.format === 'qualifying_knockout' && activeSession.matches.some((match) => match.bracketRound !== null));
 
   return (
-    <section className="mx-auto min-h-[640px] w-full max-w-md overflow-hidden rounded-[2rem] border border-outline-variant/30 bg-surface-container shadow-2xl">
+    <section className={`mx-auto min-h-[640px] w-full overflow-hidden rounded-[2rem] border border-outline-variant/30 bg-surface-container shadow-2xl ${hasKnockoutBracket ? 'max-w-7xl' : 'max-w-md'}`}>
       <header className="border-b border-outline-variant/20 bg-surface-container-high px-5 pb-4 pt-6">
         <div className="flex items-center justify-between">
           <div><p className="text-[10px] font-bold uppercase tracking-[0.22em] text-primary-fixed">Live court feed</p><h1 className="mt-1 font-display text-2xl font-black text-white">RallyFire</h1></div>
@@ -27,7 +32,7 @@ export default function MobileView({ players, matches, lang, setLang }: MobileVi
 
       <div className="space-y-3 p-5">
         {view === 'matches' ? (
-          matches.length ? matches.map((match, index) => (
+          hasKnockoutBracket && activeSession ? <KnockoutBracket teams={activeSession.teams} matches={activeSession.matches} /> : matches.length ? matches.map((match, index) => (
             <article key={match.id} className="rounded-2xl border border-outline-variant/20 bg-surface-dim/60 p-4">
               <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-on-surface-variant"><span>Match {index + 1}</span><span>{match.court ?? 'Court TBC'} · {match.status}</span></div>
               <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center gap-3">

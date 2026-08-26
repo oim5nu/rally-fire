@@ -38,10 +38,503 @@ export function planAttendanceRollback(
   };
 }
 
+export function planQuarterFinalConfigReturn(
+  format: string,
+  status: string,
+  matchRows: ReadonlyArray<{ id: string; bracketRound: number | null }>,
+) {
+  if (format !== 'qualifying_knockout') {
+    throw new Error('Only a qualifying knockout session can return to quarter-final configuration.');
+  }
+  if (!['draw_published', 'in_progress'].includes(status)) {
+    throw new Error('Only a published or in progress session can return to quarter-final configuration.');
+  }
+  const qualifierMatches = matchRows.filter((match) => match.bracketRound === null).slice(0, 5);
+  const qualifierMatchIds = new Set(qualifierMatches.map((match) => match.id));
+  const deletedMatchIds = matchRows
+    .filter((match) => !qualifierMatchIds.has(match.id))
+    .map((match) => match.id);
+  if (qualifierMatches.length !== 5 || !matchRows.some((match) => match.bracketRound !== null) || deletedMatchIds.length === 0) {
+    throw new Error('No generated bracket exists for this session.');
+  }
+  return {
+    keptQualifierMatchIds: [...qualifierMatchIds],
+    deletedMatchIds,
+  };
+}
+
+export function validateDraftFormatChange(status: string): void {
+  if (status !== 'draft') throw new Error('Only a draft session can change competition format.');
+}
+
 export interface ConfiguredPair {
   number: number;
   groupAPlayerId: string;
   groupBPlayerId: string;
+}
+
+export type KnockoutSource =
+  | { kind: 'team'; teamIndex: number }
+  | { kind: 'preliminary'; matchIndex: number };
+
+export interface KnockoutConfig {
+  preliminaryPairs: Array<[number, number]>;
+  mainSources: KnockoutSource[];
+}
+
+export interface QualifyingKnockoutConfig {
+  qualifyingPairs: Array<[number, number]>;
+}
+
+export interface KnockoutMatchPlan {
+  key: string;
+  round: number;
+  position: number;
+  teamAIndex: number | null;
+  teamBIndex: number | null;
+  sourceAKey: string | null;
+  sourceBKey: string | null;
+  nextKey: string | null;
+  winnerToSlot: 'A' | 'B' | null;
+}
+
+export type TournamentMatchKind = 'championship' | 'placement';
+
+export type TournamentSource =
+  | { kind: 'team'; teamIndex: number }
+  | { kind: 'outcome'; matchKey: string; outcome: 'winner' | 'loser' };
+
+export interface TournamentMatchPlan {
+  key: string;
+  matchKind: TournamentMatchKind;
+  round: number;
+  position: number;
+  placementGroup: number | null;
+  placementBestRank: number | null;
+  placementWorstRank: number | null;
+  sourceA: TournamentSource;
+  sourceB: TournamentSource;
+  winnerNextKey: string | null;
+  winnerToSlot: 'A' | 'B' | null;
+  loserNextKey: string | null;
+  loserToSlot: 'A' | 'B' | null;
+}
+
+export interface PlacementGroupPlan {
+  id: number;
+  bestRank: number;
+  worstRank: number;
+  entryMatchKeys: string[];
+}
+
+function bracketSeedOrder(size: number): number[] {
+  let order = [1, 2];
+  for (let currentSize = 2; currentSize < size; currentSize *= 2) {
+    const nextSize = currentSize * 2;
+    order = order.flatMap((seed) => [seed, nextSize + 1 - seed]);
+  }
+  return size === 1 ? [1] : order;
+}
+
+export function buildDefaultKnockoutConfig(teamCount: number): KnockoutConfig {
+  if (!Number.isInteger(teamCount) || teamCount < 2) throw new Error('Knockout requires at least two teams.');
+  const mainSize = 2 ** Math.floor(Math.log2(teamCount));
+  const preliminaryCount = teamCount - mainSize;
+  const byeCount = mainSize - preliminaryCount;
+  const preliminaryPairs = Array.from({ length: preliminaryCount }, (_, index) => [
+    byeCount + index,
+    teamCount - 1 - index,
+  ] as [number, number]);
+  const nominalSources = Array.from({ length: mainSize }, (_, index): KnockoutSource =>
+    index < byeCount
+      ? { kind: 'team', teamIndex: index }
+      : { kind: 'preliminary', matchIndex: index - byeCount });
+  return {
+    preliminaryPairs,
+    mainSources: bracketSeedOrder(mainSize).map((seed) => nominalSources[seed - 1]),
+  };
+}
+
+export function buildKnockoutDraw(teamCount: number, config: KnockoutConfig) {
+  const mainSize = 2 ** Math.floor(Math.log2(teamCount));
+  const preliminaryCount = teamCount - mainSize;
+  if (config.preliminaryPairs.length !== preliminaryCount || config.mainSources.length !== mainSize) {
+    throw new Error('Knockout configuration does not match the required bracket size.');
+  }
+  const teamUses = config.preliminaryPairs.flat();
+  const preliminaryUses: number[] = [];
+  for (const source of config.mainSources) {
+    if (source.kind === 'team') teamUses.push(source.teamIndex);
+    else preliminaryUses.push(source.matchIndex);
+  }
+  const expectedTeams = Array.from({ length: teamCount }, (_, index) => index);
+  const sortedTeams = [...teamUses].sort((left, right) => left - right);
+  const sortedPreliminaries = [...preliminaryUses].sort((left, right) => left - right);
+  if (sortedTeams.join(',') !== expectedTeams.join(',')
+    || sortedPreliminaries.join(',') !== Array.from({ length: preliminaryCount }, (_, index) => index).join(',')) {
+    throw new Error('Every team and preliminary winner must be used exactly once.');
+  }
+
+  const matches: KnockoutMatchPlan[] = config.preliminaryPairs.map(([teamAIndex, teamBIndex], position) => ({
+    key: `preliminary-${position}`,
+    round: 0,
+    position,
+    teamAIndex,
+    teamBIndex,
+    sourceAKey: null,
+    sourceBKey: null,
+    nextKey: null,
+    winnerToSlot: null,
+  }));
+
+  let sources = config.mainSources.map((source) => source.kind === 'team'
+    ? { teamIndex: source.teamIndex, sourceKey: null as string | null }
+    : { teamIndex: null, sourceKey: `preliminary-${source.matchIndex}` });
+  let round = 1;
+  while (sources.length > 1) {
+    const roundMatches: KnockoutMatchPlan[] = [];
+    for (let position = 0; position < sources.length / 2; position += 1) {
+      const sourceA = sources[position * 2];
+      const sourceB = sources[position * 2 + 1];
+      roundMatches.push({
+        key: `round-${round}-${position}`,
+        round,
+        position,
+        teamAIndex: sourceA.teamIndex,
+        teamBIndex: sourceB.teamIndex,
+        sourceAKey: sourceA.sourceKey,
+        sourceBKey: sourceB.sourceKey,
+        nextKey: null,
+        winnerToSlot: null,
+      });
+    }
+    matches.push(...roundMatches);
+    sources = roundMatches.map((match) => ({ teamIndex: null, sourceKey: match.key }));
+    round += 1;
+  }
+
+  const downstream = new Map<string, { nextKey: string; slot: 'A' | 'B' }>();
+  for (const match of matches) {
+    if (match.sourceAKey) downstream.set(match.sourceAKey, { nextKey: match.key, slot: 'A' });
+    if (match.sourceBKey) downstream.set(match.sourceBKey, { nextKey: match.key, slot: 'B' });
+  }
+  return {
+    matches: matches.map((match) => ({
+      ...match,
+      nextKey: downstream.get(match.key)?.nextKey ?? null,
+      winnerToSlot: downstream.get(match.key)?.slot ?? null,
+    })),
+  };
+}
+
+function sourceForKnockoutSlot(
+  teamIndex: number | null,
+  sourceKey: string | null,
+  keyPrefix = '',
+): TournamentSource {
+  if (teamIndex !== null) return { kind: 'team', teamIndex };
+  if (sourceKey) return { kind: 'outcome', matchKey: `${keyPrefix}${sourceKey}`, outcome: 'winner' };
+  throw new Error('Every tournament slot requires a team or feeder match.');
+}
+
+function connectTournamentRoutes(matches: TournamentMatchPlan[]): void {
+  const byKey = new Map(matches.map((match) => [match.key, match]));
+  for (const match of matches) {
+    for (const [slot, source] of [['A', match.sourceA], ['B', match.sourceB]] as const) {
+      if (source.kind !== 'outcome') continue;
+      const feeder = byKey.get(source.matchKey);
+      if (!feeder) throw new Error(`Tournament feeder ${source.matchKey} does not exist.`);
+      if (source.outcome === 'winner') {
+        if (feeder.winnerNextKey) throw new Error(`Winner of ${source.matchKey} is routed more than once.`);
+        feeder.winnerNextKey = match.key;
+        feeder.winnerToSlot = slot;
+      } else {
+        if (feeder.loserNextKey) throw new Error(`Loser of ${source.matchKey} is routed more than once.`);
+        feeder.loserNextKey = match.key;
+        feeder.loserToSlot = slot;
+      }
+    }
+  }
+}
+
+function buildClassificationMatches(
+  entries: TournamentSource[],
+  group: PlacementGroupPlan,
+  keyPrefix: string,
+  firstDisplayRound: number,
+  positionByRound: Map<number, number>,
+): TournamentMatchPlan[] {
+  if (entries.length < 2) return [];
+
+  const localDraw = buildKnockoutDraw(entries.length, buildDefaultKnockoutConfig(entries.length));
+  const firstLocalRound = Math.min(...localDraw.matches.map((match) => match.round));
+  const localKey = (key: string) => `${keyPrefix}${key}`;
+  const localMatches = localDraw.matches.map((match): TournamentMatchPlan => {
+    const displayRound = firstDisplayRound + match.round - firstLocalRound;
+    const position = positionByRound.get(displayRound) ?? 0;
+    positionByRound.set(displayRound, position + 1);
+    const matchesInRound = localDraw.matches.filter((candidate) => candidate.round === match.round).length;
+    const exactFinal = matchesInRound === 1 && match.round === Math.max(...localDraw.matches.map((candidate) => candidate.round));
+    return {
+      key: localKey(match.key),
+      matchKind: 'placement',
+      round: displayRound,
+      position,
+      placementGroup: group.id,
+      placementBestRank: exactFinal ? group.bestRank : group.bestRank,
+      placementWorstRank: exactFinal ? Math.min(group.bestRank + 1, group.worstRank) : group.worstRank,
+      sourceA: match.teamAIndex !== null
+        ? entries[match.teamAIndex]
+        : sourceForKnockoutSlot(null, match.sourceAKey, keyPrefix),
+      sourceB: match.teamBIndex !== null
+        ? entries[match.teamBIndex]
+        : sourceForKnockoutSlot(null, match.sourceBKey, keyPrefix),
+      winnerNextKey: null,
+      winnerToSlot: null,
+      loserNextKey: null,
+      loserToSlot: null,
+    };
+  });
+
+  const lastRound = Math.max(...localDraw.matches.map((match) => match.round));
+  const mainSize = 2 ** Math.floor(Math.log2(entries.length));
+  const classificationMatches: TournamentMatchPlan[] = [];
+  for (const round of [...new Set(localDraw.matches.map((match) => match.round))].sort((a, b) => a - b)) {
+    if (round === lastRound) continue;
+    const roundMatches = localDraw.matches.filter((match) => match.round === round);
+    if (roundMatches.length < 2) continue;
+    const subBestRank = round === 0
+      ? group.bestRank + mainSize
+      : group.bestRank + roundMatches.length;
+    const subGroup = {
+      ...group,
+      bestRank: subBestRank,
+      worstRank: Math.min(group.worstRank, subBestRank + roundMatches.length - 1),
+    };
+    const sourceDisplayRound = firstDisplayRound + round - firstLocalRound;
+    classificationMatches.push(...buildClassificationMatches(
+      roundMatches.map((match) => ({ kind: 'outcome', matchKey: localKey(match.key), outcome: 'loser' as const })),
+      subGroup,
+      `${keyPrefix}class-${round}-`,
+      sourceDisplayRound + 1,
+      positionByRound,
+    ));
+  }
+  return [...localMatches, ...classificationMatches];
+}
+
+export function buildKnockoutTournament(teamCount: number, config: KnockoutConfig) {
+  const draw = buildKnockoutDraw(teamCount, config);
+  const championship: TournamentMatchPlan[] = draw.matches.map((match) => ({
+    key: match.key,
+    matchKind: 'championship',
+    round: match.round,
+    position: match.position,
+    placementGroup: null,
+    placementBestRank: null,
+    placementWorstRank: null,
+    sourceA: sourceForKnockoutSlot(match.teamAIndex, match.sourceAKey),
+    sourceB: sourceForKnockoutSlot(match.teamBIndex, match.sourceBKey),
+    winnerNextKey: null,
+    winnerToSlot: null,
+    loserNextKey: null,
+    loserToSlot: null,
+  }));
+
+  const rounds = [...new Set(draw.matches.map((match) => match.round))].sort((a, b) => b - a);
+  const finalRound = Math.max(...rounds);
+  const mainSize = 2 ** Math.floor(Math.log2(teamCount));
+  const cohorts: Array<{ bestRank: number; worstRank: number; entryMatchKeys: string[] }> = [];
+  const preliminaryMatches = draw.matches.filter((match) => match.round === 0);
+  let singletonPreliminary: string | null = preliminaryMatches.length === 1 ? preliminaryMatches[0].key : null;
+  for (const round of rounds) {
+    if (round === finalRound) continue;
+    const roundMatches = draw.matches.filter((match) => match.round === round);
+    if (round === 0 && roundMatches.length === 1) {
+      continue;
+    }
+    const entryMatchKeys = roundMatches.map((match) => match.key);
+    let worstRank = round === 0 ? teamCount : roundMatches.length * 2;
+    if (singletonPreliminary && round === 1) {
+      entryMatchKeys.push(singletonPreliminary);
+      worstRank = teamCount;
+      singletonPreliminary = null;
+    }
+    if (entryMatchKeys.length >= 2) {
+      cohorts.push({
+        bestRank: round === 0 ? mainSize + 1 : roundMatches.length + 1,
+        worstRank,
+        entryMatchKeys,
+      });
+    }
+  }
+  cohorts.sort((left, right) => left.bestRank - right.bestRank);
+
+  const placementGroups: PlacementGroupPlan[] = cohorts.map((cohort, index) => ({ id: index + 1, ...cohort }));
+  const placementMatches: TournamentMatchPlan[] = [];
+  for (const group of placementGroups) {
+    placementMatches.push(...buildClassificationMatches(
+      group.entryMatchKeys.map((matchKey) => ({ kind: 'outcome', matchKey, outcome: 'loser' as const })),
+      group,
+      `placement-${group.id}-`,
+      0,
+      new Map(),
+    ));
+  }
+
+  const matches = [...championship, ...placementMatches];
+  connectTournamentRoutes(matches);
+  return { matches, placementGroups };
+}
+
+export function buildQualifyingKnockoutMatches(teamCount: number, config?: QualifyingKnockoutConfig): DrawMatch[] {
+  if (teamCount !== 10) {
+    throw new Error('Qualifying knockout requires exactly ten teams.');
+  }
+  const qualifyingPairs = config?.qualifyingPairs ?? Array.from({ length: 5 }, (_, index) => [index * 2, index * 2 + 1] as [number, number]);
+  if (qualifyingPairs.length !== 5) {
+    throw new Error('Qualifying knockout requires exactly five qualifying matches.');
+  }
+  const teamUses = qualifyingPairs.flat();
+  if (teamUses.some((teamIndex) => !Number.isInteger(teamIndex) || teamIndex < 0 || teamIndex >= teamCount)
+    || [...teamUses].sort((left, right) => left - right).join(',') !== Array.from({ length: teamCount }, (_, index) => index).join(',')) {
+    throw new Error('Every qualifying knockout team must be used exactly once.');
+  }
+  return qualifyingPairs.map(([teamAIndex, teamBIndex], index) => ({
+    teamAIndex,
+    teamBIndex,
+    sequence: index + 1,
+  }));
+}
+
+export interface QualifyingTeamResult {
+  teamId: string;
+  seed: number;
+  scoreFor: number;
+  scoreAgainst: number;
+}
+
+export interface QualifyingTeamStanding extends QualifyingTeamResult {
+  wins: number;
+  losses: number;
+  winPercentage: number;
+  pointDifferential: number;
+  qualified: boolean;
+}
+
+export function rankQualifyingTeams(results: QualifyingTeamResult[]): QualifyingTeamStanding[] {
+  if (results.length !== 10) {
+    throw new Error('Qualifying knockout standings require exactly ten team results.');
+  }
+  const ranked = results
+    .map((result) => {
+      const wins = result.scoreFor > result.scoreAgainst ? 1 : 0;
+      const losses = wins ? 0 : 1;
+      return {
+        ...result,
+        wins,
+        losses,
+        winPercentage: wins,
+        pointDifferential: result.scoreFor - result.scoreAgainst,
+        qualified: false,
+      };
+    })
+    .sort((left, right) =>
+      right.winPercentage - left.winPercentage
+      || right.pointDifferential - left.pointDifferential
+      || right.scoreFor - left.scoreFor
+      || left.seed - right.seed,
+    );
+
+  return ranked.map((standing, index) => ({ ...standing, qualified: index < 8 }));
+}
+
+export function buildQualifyingConsolationMatch(
+  standings: ReadonlyArray<Pick<QualifyingTeamStanding, 'teamId' | 'seed' | 'qualified'>>,
+  sequence: number,
+) {
+  const eliminated = standings
+    .filter((standing) => !standing.qualified)
+    .sort((left, right) => left.seed - right.seed);
+  if (eliminated.length !== 2) {
+    throw new Error('Exactly two eliminated teams are required for the consolation match.');
+  }
+  return {
+    teamAId: eliminated[0].teamId,
+    teamBId: eliminated[1].teamId,
+    sequence,
+  };
+}
+
+export function resolveQualifyingKnockoutTeams(
+  standings: ReadonlyArray<Pick<QualifyingTeamStanding, 'teamId' | 'qualified'>>,
+  quarterFinalTeamIds?: readonly string[],
+) {
+  if (standings.length !== 10) {
+    throw new Error('Qualifying knockout team selection requires exactly ten teams.');
+  }
+  const standingTeamIds = standings.map((standing) => standing.teamId);
+  const selectedTeamIds = quarterFinalTeamIds
+    ? [...quarterFinalTeamIds]
+    : standings.filter((standing) => standing.qualified).map((standing) => standing.teamId);
+  if (selectedTeamIds.length !== 8 || new Set(selectedTeamIds).size !== 8) {
+    throw new Error('Quarter-final selection requires eight unique teams.');
+  }
+  const unknownTeamId = selectedTeamIds.find((teamId) => !standingTeamIds.includes(teamId));
+  if (unknownTeamId) {
+    throw new Error(`Quarter-final selection includes unknown team ${unknownTeamId}.`);
+  }
+  return {
+    quarterFinalTeamIds: selectedTeamIds,
+    consolationTeamIds: standingTeamIds.filter((teamId) => !selectedTeamIds.includes(teamId)),
+  };
+}
+
+export function validateQualifyingKnockoutFinalization(
+  format: string,
+  matchRows: ReadonlyArray<{ bracketRound: number | null; status: string }>,
+): void {
+  if (format === 'qualifying_knockout' && !matchRows.some((match) => match.bracketRound !== null)) {
+    throw new Error('Create and complete the knockout bracket before finalizing this session.');
+  }
+}
+
+export function knockoutStageLabel(round: number, matchCount: number): string {
+  if (round === 0) return 'Preliminary';
+  if (matchCount === 1) return 'Final';
+  if (matchCount === 2) return 'Semifinal';
+  if (matchCount === 4) return 'Quarterfinal';
+  return `Round of ${matchCount * 2}`;
+}
+
+export function validateWinnerAdvancement(
+  currentWinnerTeamId: string | null,
+  nextWinnerTeamId: string,
+  downstreamScored: boolean,
+): void {
+  if (downstreamScored && currentWinnerTeamId !== nextWinnerTeamId) {
+    throw new Error('The downstream match is already scored. Return to attendance before changing this winner.');
+  }
+}
+
+export function validateOutcomeAdvancement(input: {
+  currentWinnerTeamId: string | null;
+  nextWinnerTeamId: string;
+  winnerDownstreamScored: boolean;
+  currentLoserTeamId: string | null;
+  nextLoserTeamId: string;
+  loserDownstreamScored: boolean;
+}): void {
+  validateWinnerAdvancement(
+    input.currentWinnerTeamId,
+    input.nextWinnerTeamId,
+    input.winnerDownstreamScored,
+  );
+  validateWinnerAdvancement(
+    input.currentLoserTeamId,
+    input.nextLoserTeamId,
+    input.loserDownstreamScored,
+  );
 }
 
 function buildMatches(teamCount: number): DrawMatch[] {
